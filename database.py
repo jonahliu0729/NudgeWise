@@ -324,3 +324,132 @@ def save_feedback(
     conn.commit()
 
     conn.close()
+
+def get_recent_checkins(user_id, limit=7):
+    """Return the most recent check-ins for a user."""
+
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT
+            id,
+            user_id,
+            sleep,
+            stress,
+            mood,
+            energy,
+            screen_time,
+            activity,
+            social,
+            hour,
+            created_at
+        FROM checkins
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (user_id, limit),
+    )
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return rows
+
+
+def get_recent_predictions(user_id, limit=7):
+    """Return the most recent AI predictions for a user."""
+
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT *
+        FROM predictions
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (user_id, limit),
+    )
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return rows
+
+
+def get_recent_feedback(user_id, limit=7):
+    """Return the most recent user feedback."""
+
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT *
+        FROM feedback
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (user_id, limit),
+    )
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return rows
+
+def get_recent_predictions(user_id, limit=7):
+    """Return the most recent AI predictions for a user."""
+
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT *
+        FROM predictions
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (user_id, limit),
+    )
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return rows
+
+
+def get_recent_feedback(user_id, limit=7):
+    """Return the most recent user feedback."""
+
+    conn = connect_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT *
+        FROM feedback
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+        LIMIT ?
+        """,
+        (user_id, limit),
+    )
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return rows
