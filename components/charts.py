@@ -1,5 +1,12 @@
 """
-Reusable NudgeWise charts.
+SmartScreen chart components.
+
+Charts are intentionally restrained:
+- no rainbow palettes
+- no decorative backgrounds
+- minimal gridlines
+- meaningful labels
+- longitudinal data is prioritised
 """
 
 from __future__ import annotations
@@ -7,70 +14,141 @@ from __future__ import annotations
 from typing import Optional
 
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
 
 # ============================================================
-# Chart Theme
+# Chart constants
 # ============================================================
 
-CHART_LAYOUT = {
+TEXT = "#20201F"
+SECONDARY = "#777771"
+GRID = "#ECECE8"
+ACCENT = "#2F6F68"
+
+
+BASE_LAYOUT = {
     "paper_bgcolor": "rgba(0,0,0,0)",
     "plot_bgcolor": "rgba(0,0,0,0)",
     "font": {
-        "family": "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
-        "color": "#526077",
+        "family": (
+            "-apple-system, BlinkMacSystemFont, "
+            "'SF Pro Text', Inter, sans-serif"
+        ),
+        "color": SECONDARY,
     },
     "margin": {
-        "l": 10,
-        "r": 10,
-        "t": 45,
-        "b": 10,
+        "l": 8,
+        "r": 8,
+        "t": 20,
+        "b": 8,
     },
+    "hovermode": "x unified",
 }
 
 
 # ============================================================
-# Empty State
+# Helpers
+# ============================================================
+
+def _style_axes(
+    figure: go.Figure,
+    y_range: Optional[list[float]] = None,
+    y_title: Optional[str] = None,
+) -> None:
+    """Apply consistent axis styling."""
+
+    figure.update_xaxes(
+        showgrid=False,
+        showline=False,
+        zeroline=False,
+        title=None,
+        tickfont={
+            "size": 11,
+            "color": SECONDARY,
+        },
+    )
+
+    figure.update_yaxes(
+        showgrid=True,
+        gridcolor=GRID,
+        gridwidth=1,
+        showline=False,
+        zeroline=False,
+        title=y_title,
+        tickfont={
+            "size": 11,
+            "color": SECONDARY,
+        },
+    )
+
+    if y_range is not None:
+        figure.update_yaxes(
+            range=y_range,
+        )
+
+
+def _display(
+    figure: go.Figure,
+    height: int = 310,
+) -> None:
+    """Display a chart with consistent settings."""
+
+    figure.update_layout(
+        **BASE_LAYOUT,
+        height=height,
+        showlegend=False,
+    )
+
+    st.plotly_chart(
+        figure,
+        width="stretch",
+        config={
+            "displayModeBar": False,
+            "responsive": True,
+        },
+    )
+
+
+# ============================================================
+# Empty state
 # ============================================================
 
 def empty_chart(
-    message: str = "Not enough data yet.",
+    message: str = (
+        "Complete a few more check-ins to reveal "
+        "your personal trend."
+    ),
 ) -> None:
-    """Display a clean empty state when there is insufficient data."""
+    """Display a quiet chart empty state."""
 
     st.markdown(
         f"""
         <div style="
-            background:#FFFFFF;
-            border:1px solid #E2E8F0;
-            border-radius:18px;
-            padding:2.5rem 1.5rem;
-            text-align:center;
-            color:#718096;
+            padding:2.5rem 0;
+            border-top:1px solid #ECECE8;
+            border-bottom:1px solid #ECECE8;
         ">
+
             <div style="
-                font-size:1.8rem;
-                margin-bottom:0.5rem;
+                font-size:0.95rem;
+                font-weight:600;
+                color:#20201F;
+                margin-bottom:0.35rem;
             ">
-                📊
+                Not enough data yet
             </div>
 
             <div style="
-                font-weight:650;
-                color:#526077;
+                font-size:0.84rem;
+                color:#85857F;
+                line-height:1.55;
+                max-width:520px;
             ">
                 {message}
             </div>
 
-            <div style="
-                font-size:0.82rem;
-                margin-top:0.35rem;
-            ">
-                Complete more daily check-ins to unlock your trends.
-            </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -78,54 +156,305 @@ def empty_chart(
 
 
 # ============================================================
-# Trend Chart
+# Generic trend chart
 # ============================================================
 
 def trend_chart(
     data: pd.DataFrame,
     x: str,
     y: str,
-    title: str,
+    title: Optional[str] = None,
     y_title: Optional[str] = None,
+    y_range: Optional[list[float]] = None,
 ) -> None:
-    """Display a clean line chart for longitudinal wellbeing data."""
+    """Display a single longitudinal metric."""
 
-    if data.empty or x not in data.columns or y not in data.columns:
+    if (
+        data.empty
+        or x not in data.columns
+        or y not in data.columns
+    ):
         empty_chart()
         return
 
-    chart = px.line(
-        data,
-        x=x,
-        y=y,
-        markers=True,
-        title=title,
+    figure = go.Figure()
+
+    figure.add_trace(
+        go.Scatter(
+            x=data[x],
+            y=data[y],
+            mode="lines+markers",
+            line={
+                "color": ACCENT,
+                "width": 2.5,
+            },
+            marker={
+                "color": ACCENT,
+                "size": 6,
+            },
+            hovertemplate=(
+                "%{x}<br>"
+                "%{y}"
+                "<extra></extra>"
+            ),
+        )
     )
 
-    chart.update_layout(
-        **CHART_LAYOUT,
-        xaxis_title=None,
-        yaxis_title=y_title,
-        hovermode="x unified",
+    _style_axes(
+        figure,
+        y_range=y_range,
+        y_title=y_title,
     )
 
-    chart.update_traces(
-        line=dict(
-            width=3,
-        ),
-        marker=dict(
-            size=7,
-        ),
-    )
+    if title:
+        figure.update_layout(
+            title={
+                "text": title,
+                "font": {
+                    "size": 16,
+                    "color": TEXT,
+                },
+                "x": 0,
+                "xanchor": "left",
+            },
+        )
 
-    st.plotly_chart(
-        chart,
-        use_container_width=True,
-    )
+    _display(figure)
 
 
 # ============================================================
-# Multi Metric Trend
+# Wellbeing history
+# ============================================================
+
+def wellbeing_history_chart(
+    data: pd.DataFrame,
+    date_column: str = "date",
+    score_column: str = "score",
+) -> None:
+    """Display wellbeing indicator over time."""
+
+    if (
+        data.empty
+        or date_column not in data.columns
+        or score_column not in data.columns
+    ):
+        empty_chart(
+            "Your wellbeing trend will appear after "
+            "you have enough personal history."
+        )
+        return
+
+    figure = go.Figure()
+
+    figure.add_trace(
+        go.Scatter(
+            x=data[date_column],
+            y=data[score_column],
+            mode="lines+markers",
+            line={
+                "color": ACCENT,
+                "width": 2.8,
+            },
+            marker={
+                "color": ACCENT,
+                "size": 7,
+            },
+            hovertemplate=(
+                "%{x}<br>"
+                "Indicator: %{y}/100"
+                "<extra></extra>"
+            ),
+        )
+    )
+
+    _style_axes(
+        figure,
+        y_range=[0, 100],
+        y_title=None,
+    )
+
+    figure.update_layout(
+        title={
+            "text": "Wellbeing over time",
+            "font": {
+                "size": 16,
+                "color": TEXT,
+            },
+            "x": 0,
+            "xanchor": "left",
+        },
+    )
+
+    _display(figure)
+
+
+# ============================================================
+# Mood and energy
+# ============================================================
+
+def mood_energy_chart(
+    data: pd.DataFrame,
+    date_column: str = "date",
+) -> None:
+    """Display mood and energy on a shared 1–5 scale."""
+
+    required = {
+        date_column,
+        "mood",
+        "energy",
+    }
+
+    if data.empty or not required.issubset(data.columns):
+        empty_chart(
+            "Mood and energy trends will appear after "
+            "more check-ins."
+        )
+        return
+
+    figure = go.Figure()
+
+    figure.add_trace(
+        go.Scatter(
+            x=data[date_column],
+            y=data["mood"],
+            mode="lines+markers",
+            name="Mood",
+            line={
+                "color": ACCENT,
+                "width": 2.5,
+            },
+            marker={
+                "size": 6,
+            },
+            hovertemplate=(
+                "%{x}<br>"
+                "Mood: %{y}/5"
+                "<extra></extra>"
+            ),
+        )
+    )
+
+    figure.add_trace(
+        go.Scatter(
+            x=data[date_column],
+            y=data["energy"],
+            mode="lines+markers",
+            name="Energy",
+            line={
+                "color": "#777771",
+                "width": 2.5,
+                "dash": "dot",
+            },
+            marker={
+                "size": 6,
+            },
+            hovertemplate=(
+                "%{x}<br>"
+                "Energy: %{y}/5"
+                "<extra></extra>"
+            ),
+        )
+    )
+
+    _style_axes(
+        figure,
+        y_range=[0, 5],
+    )
+
+    figure.update_layout(
+        title={
+            "text": "Mood and energy",
+            "font": {
+                "size": 16,
+                "color": TEXT,
+            },
+            "x": 0,
+            "xanchor": "left",
+        },
+        showlegend=True,
+        legend={
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.02,
+            "xanchor": "left",
+            "x": 0,
+            "font": {
+                "size": 11,
+            },
+        },
+    )
+
+    _display(figure)
+
+
+# ============================================================
+# Screen time
+# ============================================================
+
+def screen_time_chart(
+    data: pd.DataFrame,
+    date_column: str = "date",
+    screen_column: str = "screen_time",
+) -> None:
+    """Display recreational screen time over time."""
+
+    if (
+        data.empty
+        or date_column not in data.columns
+        or screen_column not in data.columns
+    ):
+        empty_chart(
+            "Screen-time trends will appear after "
+            "more check-ins."
+        )
+        return
+
+    figure = go.Figure()
+
+    figure.add_trace(
+        go.Scatter(
+            x=data[date_column],
+            y=data[screen_column],
+            mode="lines+markers",
+            line={
+                "color": ACCENT,
+                "width": 2.5,
+            },
+            marker={
+                "size": 6,
+            },
+            fill="tozeroy",
+            fillcolor="rgba(47,111,104,0.08)",
+            hovertemplate=(
+                "%{x}<br>"
+                "Screen time: %{y:.1f} h"
+                "<extra></extra>"
+            ),
+        )
+    )
+
+    _style_axes(
+        figure,
+        y_title="Hours",
+    )
+
+    figure.update_layout(
+        title={
+            "text": "Recreational screen time",
+            "font": {
+                "size": 16,
+                "color": TEXT,
+            },
+            "x": 0,
+            "xanchor": "left",
+        },
+    )
+
+    _display(figure)
+
+
+# ============================================================
+# Multi metric trend
 # ============================================================
 
 def multi_metric_chart(
@@ -134,7 +463,12 @@ def multi_metric_chart(
     metrics: list[str],
     title: str,
 ) -> None:
-    """Display multiple wellbeing variables on one chart."""
+    """
+    Display multiple metrics.
+
+    This remains available for compatibility with the
+    existing dashboard architecture.
+    """
 
     if data.empty or x not in data.columns:
         empty_chart()
@@ -150,95 +484,59 @@ def multi_metric_chart(
         empty_chart()
         return
 
-    melted = data[[x] + available].melt(
-        id_vars=x,
-        var_name="Metric",
-        value_name="Value",
-    )
+    figure = go.Figure()
 
-    chart = px.line(
-        melted,
-        x=x,
-        y="Value",
-        color="Metric",
-        markers=True,
-        title=title,
-    )
+    line_styles = [
+        ACCENT,
+        "#777771",
+        "#A6A69F",
+    ]
 
-    chart.update_layout(
-        **CHART_LAYOUT,
-        xaxis_title=None,
-        yaxis_title=None,
-        hovermode="x unified",
-        legend_title=None,
-    )
+    for index, metric in enumerate(available):
 
-    chart.update_traces(
-        line=dict(
-            width=2.5,
-        ),
-        marker=dict(
-            size=6,
-        ),
-    )
+        colour = line_styles[
+            min(index, len(line_styles) - 1)
+        ]
 
-    st.plotly_chart(
-        chart,
-        use_container_width=True,
-    )
-
-
-# ============================================================
-# Wellbeing Score Chart
-# ============================================================
-
-def wellbeing_history_chart(
-    data: pd.DataFrame,
-    date_column: str = "date",
-    score_column: str = "score",
-) -> None:
-    """Display wellbeing score over time."""
-
-    if (
-        data.empty
-        or date_column not in data.columns
-        or score_column not in data.columns
-    ):
-        empty_chart(
-            "Your wellbeing trend will appear here."
+        figure.add_trace(
+            go.Scatter(
+                x=data[x],
+                y=data[metric],
+                mode="lines+markers",
+                name=metric.replace("_", " ").title(),
+                line={
+                    "color": colour,
+                    "width": 2.3,
+                },
+                marker={
+                    "size": 5,
+                },
+            )
         )
-        return
 
-    chart = go.Figure()
+    _style_axes(figure)
 
-    chart.add_trace(
-        go.Scatter(
-            x=data[date_column],
-            y=data[score_column],
-            mode="lines+markers",
-            name="Wellbeing",
-            line=dict(
-                width=3,
-            ),
-            marker=dict(
-                size=7,
-            ),
-        )
+    figure.update_layout(
+        title={
+            "text": title,
+            "font": {
+                "size": 16,
+                "color": TEXT,
+            },
+            "x": 0,
+            "xanchor": "left",
+        },
+        showlegend=True,
+        legend={
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.02,
+            "xanchor": "left",
+            "x": 0,
+            "font": {
+                "size": 11,
+            },
+        },
     )
 
-    chart.update_layout(
-        **CHART_LAYOUT,
-        title="Wellbeing Over Time",
-        xaxis_title=None,
-        yaxis_title="Score",
-        yaxis=dict(
-            range=[0, 100],
-        ),
-        showlegend=False,
-        hovermode="x unified",
-    )
-
-    st.plotly_chart(
-        chart,
-        use_container_width=True,
-    )
+    _display(figure)

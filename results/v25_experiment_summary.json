@@ -1,0 +1,43 @@
+{
+  "version": "NudgeWise AI v2.5",
+  "learning_problem": "soft-label probability regression",
+  "rows": 20000,
+  "features": [
+    "sleep",
+    "stress",
+    "mood",
+    "energy",
+    "screen_time",
+    "hour",
+    "activity",
+    "social",
+    "day_type"
+  ],
+  "classes": [
+    "Connect socially",
+    "Maintain habits",
+    "Prepare for bed",
+    "Reduce screen time",
+    "Stay active",
+    "Take a short break"
+  ],
+  "selected_model": "MLP",
+  "generator_mean_max_probability": 0.448189410764009,
+  "holdout_metrics": {
+    "brier_score": 8.168898042476853e-05,
+    "probability_mae": 0.0026812090793689692,
+    "js_divergence": 0.00012384315529518936,
+    "top1_agreement": 0.98825,
+    "top2_coverage": 0.99975,
+    "sampled_label_accuracy": 0.46475
+  },
+  "per_class_probability_mae": {
+    "Connect socially": 0.00318611821393803,
+    "Maintain habits": 0.0021125286891290123,
+    "Prepare for bed": 0.0031115865814896936,
+    "Reduce screen time": 0.002255035924465619,
+    "Stay active": 0.0022074048140555943,
+    "Take a short break": 0.0032145805547081495
+  },
+  "random_state": 42
+}

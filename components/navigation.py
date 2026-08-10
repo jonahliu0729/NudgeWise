@@ -1,162 +1,166 @@
 """
-NudgeWise navigation components.
+components/navigation.py
+
+Shared navigation for every NudgeWise page.
 """
 
 from __future__ import annotations
 
 import streamlit as st
 
-
-PAGES = {
-    "Dashboard": "dashboard",
-    "Daily Check-in": "checkin",
-    "AI Coach": "ai_coach",
-    "Insights": "insights",
-    "Progress": "progress",
-    "Settings": "settings",
-}
+from database import get_user
 
 
-def render_brand() -> None:
-    """Display the NudgeWise sidebar brand."""
+# ============================================================
+# Session reset
+# ============================================================
 
-    st.sidebar.markdown(
-        """
-        <div style="
-            padding: 0.5rem 0.25rem 1.5rem 0.25rem;
-        ">
+def switch_participant() -> None:
+    """
+    End the current participant session.
+
+    Database records are NOT deleted.
+    """
+
+    keys_to_clear = [
+        "user_id",
+        "participant_code",
+        "prediction",
+        "confidence",
+        "prediction_id",
+        "reasons",
+        "checkin_submitted",
+        "feedback_submitted",
+        "new_participant",
+    ]
+
+    for key in keys_to_clear:
+        st.session_state.pop(
+            key,
+            None,
+        )
+
+    st.switch_page(
+        "app.py"
+    )
+
+
+# ============================================================
+# Sidebar
+# ============================================================
+
+def render_sidebar() -> None:
+    """Render the same sidebar everywhere in NudgeWise."""
+
+    with st.sidebar:
+
+        st.markdown(
+            """
             <div style="
-                font-size:1.45rem;
-                font-weight:800;
-                letter-spacing:-0.04em;
-                color:#FFFFFF;
+                font-size:1.28rem;
+                font-weight:650;
+                letter-spacing:-0.035em;
+                margin-bottom:0.12rem;
             ">
                 NudgeWise
             </div>
 
             <div style="
-                margin-top:0.3rem;
                 font-size:0.78rem;
-                color:#CBD5E1;
-                line-height:1.4;
+                color:#85857F;
+                line-height:1.45;
             ">
-                Your habits.<br>
-                Your data.<br>
-                Your next step.
+                Digital wellbeing, made personal.
             </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_sidebar() -> None:
-    """Render the main NudgeWise sidebar."""
-
-    render_brand()
-
-    st.sidebar.markdown(
-        """
-        <div style="
-            color:#94A3B8;
-            font-size:0.7rem;
-            font-weight:750;
-            letter-spacing:0.1em;
-            text-transform:uppercase;
-            margin-bottom:0.55rem;
-        ">
-            Navigation
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    for label, page in PAGES.items():
-        st.sidebar.page_link(
-            f"pages/{page}.py",
-            label=label,
+            """,
+            unsafe_allow_html=True,
         )
 
-    st.sidebar.markdown(
-        """
-        <div style="
-            margin-top:2rem;
-            padding:0.9rem;
-            border-radius:12px;
-            background:rgba(255,255,255,0.06);
-            border:1px solid rgba(255,255,255,0.08);
-        ">
-            <div style="
-                font-size:0.72rem;
-                color:#94A3B8;
-                text-transform:uppercase;
-                letter-spacing:0.08em;
-                font-weight:700;
-            ">
-                NudgeWise AI
-            </div>
+        st.divider()
 
-            <div style="
-                margin-top:0.35rem;
-                font-size:0.82rem;
-                color:#E2E8F0;
-                line-height:1.4;
-            ">
-                Personalised digital wellbeing insights.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        user_id = st.session_state.get(
+            "user_id"
+        )
 
+        # ----------------------------------------------------
+        # Participant signed in
+        # ----------------------------------------------------
 
-def render_top_bar(
-    greeting: str = "Welcome back",
-    user_name: str = "",
-) -> None:
-    """Render a clean page header."""
+        if user_id is not None:
 
-    name_html = ""
+            participant = get_user(
+                user_id
+            )
 
-    if user_name:
-        name_html = f"""
-        <span style="
-            color:#2563EB;
-        ">
-            {user_name}
-        </span>
-        """
+            if participant:
 
-    st.markdown(
-        f"""
-        <div style="
-            display:flex;
-            justify-content:space-between;
-            align-items:flex-end;
-            margin-bottom:1.5rem;
-        ">
+                nickname = (
+                    participant.get("nickname")
+                    or participant.get("name")
+                    or "Participant"
+                )
 
-            <div>
+                participant_code = (
+                    participant.get(
+                        "participant_code"
+                    )
+                    or "Legacy participant"
+                )
 
-                <div style="
-                    color:#718096;
-                    font-size:0.9rem;
-                    font-weight:600;
-                    margin-bottom:0.25rem;
-                ">
-                    {greeting} {name_html}
-                </div>
+                st.caption(
+                    "CURRENT PARTICIPANT"
+                )
 
-                <h1 style="
-                    margin:0;
-                    color:#172033;
-                ">
-                    Your wellbeing
-                </h1>
+                st.markdown(
+                    f"""
+                    <div style="
+                        font-size:0.95rem;
+                        font-weight:600;
+                        color:#20201F;
+                    ">
+                        {nickname}
+                    </div>
 
-            </div>
+                    <div style="
+                        font-size:0.76rem;
+                        color:#85857F;
+                        margin-top:0.15rem;
+                    ">
+                        {participant_code}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+                st.divider()
+
+                st.page_link(
+                    "app.py",
+                    label="Check-in",
+                )
+
+                st.page_link(
+                    "pages/dashboard.py",
+                    label="Your wellbeing",
+                )
+
+                st.divider()
+
+                if st.button(
+                    "Switch participant",
+                    type="secondary",
+                    width="stretch",
+                ):
+
+                    switch_participant()
+
+        # ----------------------------------------------------
+        # No participant
+        # ----------------------------------------------------
+
+        else:
+
+            st.caption(
+                "Start or resume a participant session "
+                "to use NudgeWise."
+            )

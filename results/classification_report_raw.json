@@ -1,0 +1,51 @@
+{
+  "Connect socially": {
+    "precision": 0.5801047120418849,
+    "recall": 0.5479723046488625,
+    "f1-score": 0.5635808748728383,
+    "support": 1011.0
+  },
+  "Maintain habits": {
+    "precision": 0.2701525054466231,
+    "recall": 0.33695652173913043,
+    "f1-score": 0.2998790810157195,
+    "support": 368.0
+  },
+  "Prepare for bed": {
+    "precision": 0.43759398496240604,
+    "recall": 0.39863013698630134,
+    "f1-score": 0.4172043010752688,
+    "support": 730.0
+  },
+  "Reduce screen time": {
+    "precision": 0.2391304347826087,
+    "recall": 0.42777777777777776,
+    "f1-score": 0.30677290836653387,
+    "support": 360.0
+  },
+  "Stay active": {
+    "precision": 0.25902335456475584,
+    "recall": 0.25738396624472576,
+    "f1-score": 0.2582010582010582,
+    "support": 474.0
+  },
+  "Take a short break": {
+    "precision": 0.5136476426799007,
+    "recall": 0.391674550614948,
+    "f1-score": 0.4444444444444444,
+    "support": 1057.0
+  },
+  "accuracy": 0.41475,
+  "macro avg": {
+    "precision": 0.38327543907969647,
+    "recall": 0.3933992096686243,
+    "f1-score": 0.38168044466264384,
+    "support": 4000.0
+  },
+  "weighted avg": {
+    "precision": 0.43928379494983694,
+    "recall": 0.41475,
+    "f1-score": 0.42182455811805053,
+    "support": 4000.0
+  }
+}

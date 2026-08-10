@@ -1,1109 +1,644 @@
-# ============================================================
-# AI Nudge Dashboard
-# Professional UI Version
-# ============================================================
+"""
+NudgeWise
+Digital wellbeing, made personal.
 
+Version 2 participant check-in application.
+"""
 
-import streamlit as st
-import pandas as pd
-import plotly.express as px
+from __future__ import annotations
+
 from datetime import datetime
 
+import streamlit as st
 
-from predict import (
-    predict_nudge,
-    explain_prediction
+from components.navigation import (
+    render_sidebar,
 )
-
 
 from database import (
+    create_participant,
     create_tables,
-    create_user,
+    get_user,
+    get_user_by_code,
     save_checkin,
     save_prediction,
-    save_feedback
+)
+
+from predict import (
+    explain_prediction,
+    predict_nudge,
 )
 
 
-
 # ============================================================
-# Page Configuration
+# Page
 # ============================================================
-
 
 st.set_page_config(
-
-    page_title="AI Nudge",
-
-    page_icon="🌱",
-
+    page_title="NudgeWise",
+    page_icon=None,
     layout="wide",
-
-    initial_sidebar_state="expanded"
-
+    initial_sidebar_state="expanded",
 )
 
 
+# ============================================================
+# Styling
+# ============================================================
+
+st.markdown(
+    """
+    <style>
+
+    .stApp {
+        background:#FAFAF8;
+        color:#20201F;
+    }
+
+    [data-testid="stHeader"] {
+        background:transparent;
+    }
+
+    [data-testid="stSidebar"] {
+        background:#F4F4F1;
+        border-right:1px solid #E5E5E0;
+    }
+
+    .block-container {
+        max-width:1080px;
+        padding-top:3.4rem;
+        padding-bottom:5rem;
+    }
+
+    h1 {
+        font-size:2.7rem !important;
+        font-weight:650 !important;
+        letter-spacing:-0.05em !important;
+        color:#171717 !important;
+    }
+
+    h2 {
+        font-size:1.4rem !important;
+        font-weight:600 !important;
+        letter-spacing:-0.025em !important;
+    }
+
+    p {
+        color:#696963;
+        line-height:1.6;
+    }
+
+    hr {
+        border:none;
+        border-top:1px solid #E5E5E0;
+        margin:2.3rem 0;
+    }
+
+    .stButton > button,
+    .stFormSubmitButton > button {
+        min-height:3rem;
+        border-radius:11px !important;
+        font-weight:600 !important;
+    }
+
+    [data-testid="stForm"] {
+        border:none !important;
+        padding:0 !important;
+    }
+
+    .participant-code {
+        font-size:2rem;
+        font-weight:650;
+        letter-spacing:-0.04em;
+        color:#171717;
+        margin:0.5rem 0 0.6rem 0;
+    }
+
+    .quiet {
+        font-size:0.86rem;
+        color:#85857F;
+        line-height:1.55;
+    }
+
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 # ============================================================
-# Database Setup
+# Database
 # ============================================================
-
 
 create_tables()
 
 
-
 # ============================================================
-# Professional Theme
+# Session defaults
 # ============================================================
 
-
-st.markdown(
-
-"""
-<style>
-
-
-/* =====================
-GLOBAL
-===================== */
-
-
-.stApp {
-
-    background-color:#edf2f7;
-
+defaults = {
+    "user_id": None,
+    "prediction": None,
+    "confidence": None,
+    "prediction_id": None,
+    "reasons": [],
+    "checkin_submitted": False,
+    "feedback_submitted": False,
+    "new_participant": False,
 }
 
+for key, default in defaults.items():
 
-html, body, [class*="css"] {
-
-    font-family:"Inter", Arial, sans-serif;
-
-    color:#1e293b !important;
-
-}
-
-
-
-/* =====================
-HEADINGS
-===================== */
-
-
-h1 {
-
-    color:#0f172a !important;
-
-    font-weight:800;
-
-}
-
-
-h2 {
-
-    color:#1e3a8a !important;
-
-}
-
-
-h3 {
-
-    color:#334155 !important;
-
-}
-
-
-p {
-
-    color:#334155 !important;
-
-}
-
-
-
-/* =====================
-SIDEBAR
-===================== */
-
-
-section[data-testid="stSidebar"] {
-
-
-    background-color:#1e293b;
-
-
-}
-
-
-section[data-testid="stSidebar"] * {
-
-
-    color:#f8fafc !important;
-
-
-}
-
-
-
-/* =====================
-CARDS
-===================== */
-
-
-.card {
-
-
-    background-color:#f8fafc;
-
-    padding:25px;
-
-    border-radius:18px;
-
-    border:1px solid #dbe4ee;
-
-    box-shadow:
-    0px 6px 18px rgba(15,23,42,0.08);
-
-    margin-bottom:20px;
-
-
-}
-
-
-
-/* =====================
-INPUTS
-===================== */
-
-
-label {
-
-
-    color:#334155 !important;
-
-    font-weight:600;
-
-
-}
-
-
-[data-testid="stSlider"] * {
-
-
-    color:#334155 !important;
-
-
-}
-
-
-[data-testid="stRadio"] * {
-
-
-    color:#334155 !important;
-
-
-}
-
-
-[data-testid="stSelectbox"] * {
-
-
-    color:#334155 !important;
-
-
-}
-
-
-
-input {
-
-
-    background:white !important;
-
-    color:#111827 !important;
-
-
-}
-
-
-
-/* =====================
-BUTTONS
-===================== */
-
-
-button {
-
-
-    background-color:#2563eb !important;
-
-    color:white !important;
-
-    border-radius:12px !important;
-
-    font-weight:700 !important;
-
-
-}
-
-
-button:hover {
-
-
-    background-color:#1d4ed8 !important;
-
-
-}
-
-
-
-/* =====================
-AI RESULT
-===================== */
-
-
-.recommendation {
-
-
-    background-color:#dbeafe;
-
-
-    padding:30px;
-
-
-    border-radius:18px;
-
-
-    border-left:
-    8px solid #2563eb;
-
-
-}
-
-
-
-</style>
-""",
-
-unsafe_allow_html=True
-
-)
-
+    if key not in st.session_state:
+        st.session_state[key] = default
 
 
 # ============================================================
 # Sidebar
 # ============================================================
 
-
-with st.sidebar:
-
-
-    st.title("🌱 AI Nudge")
+render_sidebar()
 
 
-    st.write(
+# ============================================================
+# PARTICIPANT ENTRY
+# ============================================================
 
-        """
-        Your AI-powered
-        digital wellbeing coach.
-        """
+if st.session_state.user_id is None:
 
+    st.caption(
+        datetime.now().strftime(
+            "%A, %d %B %Y"
+        )
     )
 
+    st.title(
+        "Welcome to NudgeWise"
+    )
+
+    st.write(
+        "Start a new participant session or resume "
+        "an existing wellbeing history."
+    )
 
     st.divider()
 
-
-    st.subheader("About")
-
-
-    st.write(
-
-        """
-        AI Nudge analyses your daily
-        habits and recommends small
-        behaviour changes.
-        """
-
-    )
-
-
-
-# ============================================================
-# Header
-# ============================================================
-
-
-st.title("🌱 AI Nudge Dashboard")
-
-
-st.write(
-
-    "Personalised wellbeing recommendations powered by AI"
-
-)
-
-
-
-st.divider()
-# ============================================================
-# User Profile
-# ============================================================
-
-
-st.markdown(
-
-"""
-<div class="card">
-
-<h2>👤 User Profile</h2>
-
-</div>
-""",
-
-unsafe_allow_html=True
-
-)
-
-
-
-col1, col2 = st.columns(2)
-
-
-
-with col1:
-
-
-    name = st.text_input(
-
-        "Name",
-
-        value="Jonah"
-
-    )
-
-
-
-with col2:
-
-
-    age = st.number_input(
-
-        "Age",
-
-        min_value=10,
-
-        max_value=100,
-
-        value=16
-
-    )
-
-
-
-# ============================================================
-# Daily Metrics Cards
-# ============================================================
-
-
-st.markdown(
-
-"""
-<div class="card">
-
-<h2>📊 Daily Check-in</h2>
-
-</div>
-""",
-
-unsafe_allow_html=True
-
-)
-
-
-
-col1, col2, col3 = st.columns(3)
-
-
-
-with col1:
-
-
-    sleep = st.select_slider(
-
-        "😴 Sleep hours",
-
-        options=[
-
-            3.0,
-
-            3.5,
-
-            4.0,
-
-            4.5,
-
-            5.0,
-
-            5.5,
-
-            6.0,
-
-            6.5,
-
-            7.0,
-
-            7.5,
-
-            8.0,
-
-            8.5,
-
-            9.0,
-
-            9.5,
-
-            10.0
-
-        ],
-
-        value=7.5
-
-    )
-
-
-
-    stress = st.radio(
-
-        "😰 Stress",
-
-        [1,2,3,4,5],
-
-        horizontal=True
-
-    )
-
-
-
-    mood = st.radio(
-
-        "🙂 Mood",
-
-        [1,2,3,4,5],
-
-        horizontal=True
-
-    )
-
-
-
-with col2:
-
-
-    energy = st.radio(
-
-        "⚡ Energy",
-
-        [1,2,3,4,5],
-
-        horizontal=True
-
-    )
-
-
-
-    screen_time = st.select_slider(
-
-        "📱 Recreational screen time",
-
-        options=[
-
-            0,
-
-            0.5,
-
-            1,
-
-            1.5,
-
-            2,
-
-            2.5,
-
-            3,
-
-            4,
-
-            5,
-
-            6,
-
-            7,
-
-            8,
-
-            9,
-
-            10,
-
-            12
-
-        ],
-
-        value=3
-
-    )
-
-
-
-    hour = st.selectbox(
-
-        "🕒 Current hour",
-
-        list(range(24)),
-
-        index=datetime.now().hour
-
-    )
-
-
-
-with col3:
-
-
-    activity = st.selectbox(
-
-        "🏃 Current activity",
-
+    new_tab, returning_tab = st.tabs(
         [
-
-            "Studying",
-
-            "Working",
-
-            "Exercise",
-
-            "Relaxing",
-
-            "Phone"
-
+            "New participant",
+            "Returning participant",
         ]
-
     )
 
-
-    social = st.selectbox(
-
-        "👥 Social interaction",
-
-        [
-
-            "Low",
-
-            "Medium",
-
-            "High"
-
-        ]
-
-    )
-
-
-
-st.divider()
-
-
-
-# ============================================================
-# AI Recommendation
-# ============================================================
-
-
-
-st.markdown(
-
-"""
-<div class="card">
-
-<h2>🤖 AI Recommendation</h2>
-
-</div>
-""",
-
-unsafe_allow_html=True
-
-)
-
-
-
-if st.button(
-
-    "Generate My AI Nudge"
-
-):
-
-
-    user_id = create_user(
-
-        name,
-
-        age
-
-    )
-
-
-
-    prediction, confidence = predict_nudge(
-
-        sleep=sleep,
-
-        stress=stress,
-
-        mood=mood,
-
-        energy=energy,
-
-        screen_time=screen_time,
-
-        activity=activity,
-
-        social=social,
-
-        hour=hour
-
-    )
-
-
-
-    reasons = explain_prediction(
-
-        sleep,
-
-        stress,
-
-        mood,
-
-        energy,
-
-        screen_time,
-
-        hour
-
-    )
-
-
-
-    checkin_id = save_checkin(
-
-        user_id,
-
-        sleep,
-
-        stress,
-
-        mood,
-
-        energy,
-
-        screen_time,
-
-        activity,
-
-        social,
-
-        hour
-
-    )
-
-
-
-    prediction_id = save_prediction(
-
-        checkin_id,
-
-        prediction,
-
-        confidence
-
-    )
-
-
-
-    st.session_state.prediction = prediction
-
-    st.session_state.confidence = confidence
-
-    st.session_state.reasons = reasons
-
-    st.session_state.prediction_id = prediction_id
-# ============================================================
-# Display AI Result
-# ============================================================
-
-
-if "prediction" in st.session_state:
-
-
-    st.markdown(
-
-    f"""
-
-    <div class="recommendation">
-
-
-    <h2>
-    🌱 {st.session_state.prediction}
-    </h2>
-
-
-    <h3>
-    AI Confidence:
-    {st.session_state.confidence:.0%}
-    </h3>
-
-
-    <p>
-    <b>Why this recommendation?</b>
-    </p>
-
-
-    """,
-
-    unsafe_allow_html=True
-
-    )
-
-
-    for reason in st.session_state.reasons:
-
+    # --------------------------------------------------------
+    # New participant
+    # --------------------------------------------------------
+
+    with new_tab:
+
+        st.subheader(
+            "Start a new profile"
+        )
 
         st.write(
-
-            "✓ " + reason
-
+            "NudgeWise uses an anonymous participant code "
+            "to keep each person's check-ins separate."
         )
 
+        with st.form(
+            "new_participant_form"
+        ):
 
+            nickname = st.text_input(
+                "Nickname",
+                placeholder="Optional display name",
+            )
+
+            age = st.number_input(
+                "Age",
+                min_value=10,
+                max_value=18,
+                value=15,
+                step=1,
+            )
+
+            create_clicked = (
+                st.form_submit_button(
+                    "Create participant",
+                    type="primary",
+                    width="stretch",
+                )
+            )
+
+        if create_clicked:
+
+            participant = create_participant(
+                nickname=(
+                    nickname.strip()
+                    or "Participant"
+                ),
+                age=int(age),
+            )
+
+            st.session_state.user_id = (
+                participant["id"]
+            )
+
+            st.session_state.participant_code = (
+                participant[
+                    "participant_code"
+                ]
+            )
+
+            st.session_state.new_participant = (
+                True
+            )
+
+            st.rerun()
+
+    # --------------------------------------------------------
+    # Returning participant
+    # --------------------------------------------------------
+
+    with returning_tab:
+
+        st.subheader(
+            "Resume your profile"
+        )
+
+        st.write(
+            "Enter the participant code you received "
+            "when you first used NudgeWise."
+        )
+
+        with st.form(
+            "returning_participant_form"
+        ):
+
+            participant_code = (
+                st.text_input(
+                    "Participant code",
+                    placeholder="NW-ABC234",
+                )
+            )
+
+            resume_clicked = (
+                st.form_submit_button(
+                    "Continue",
+                    type="primary",
+                    width="stretch",
+                )
+            )
+
+        if resume_clicked:
+
+            participant = (
+                get_user_by_code(
+                    participant_code
+                )
+            )
+
+            if participant is None:
+
+                st.error(
+                    "That participant code "
+                    "could not be found."
+                )
+
+            else:
+
+                st.session_state.user_id = (
+                    participant["id"]
+                )
+
+                st.session_state.participant_code = (
+                    participant[
+                        "participant_code"
+                    ]
+                )
+
+                st.session_state.new_participant = (
+                    False
+                )
+
+                st.rerun()
+
+    st.stop()
+
+
+# ============================================================
+# Current participant
+# ============================================================
+
+participant = get_user(
+    st.session_state.user_id
+)
+
+if participant is None:
+
+    st.session_state.user_id = None
+    st.rerun()
+
+
+nickname = (
+    participant.get("nickname")
+    or participant.get("name")
+    or "Participant"
+)
+
+participant_code = (
+    participant.get("participant_code")
+)
+
+
+# ============================================================
+# Newly created participant
+# ============================================================
+
+if st.session_state.new_participant:
+
+    st.caption(
+        "PARTICIPANT PROFILE CREATED"
+    )
+
+    st.title(
+        f"Welcome, {nickname}"
+    )
+
+    st.write(
+        "Your participant code keeps future check-ins "
+        "connected to this wellbeing history."
+    )
 
     st.markdown(
-
-    """
-
-    <p>
-
-    Small actions create long-term behaviour change.
-
-    </p>
-
-
-    </div>
-
-    """,
-
-    unsafe_allow_html=True
-
+        f"""
+        <div class="participant-code">
+            {participant_code}
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-
-
-# ============================================================
-# Dashboard Metrics
-# ============================================================
-
-
-st.divider()
-
-
-st.markdown(
-
-"""
-<div class="card">
-
-<h2>📈 Wellbeing Overview</h2>
-
-</div>
-""",
-
-unsafe_allow_html=True
-
-)
-
-
-
-metric1, metric2, metric3, metric4 = st.columns(4)
-
-
-
-with metric1:
-
-
-    st.metric(
-
-        "Sleep",
-
-        f"{sleep} hrs"
-
+    st.markdown(
+        """
+        <div class="quiet">
+            Keep this code if you want to return to the same
+            profile later. It is not a password and should not
+            contain personal information.
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-
-with metric2:
-
-
-    st.metric(
-
-        "Screen Time",
-
-        f"{screen_time} hrs"
-
-    )
-
-
-with metric3:
-
-
-    st.metric(
-
-        "Mood",
-
-        f"{mood}/5"
-
-    )
-
-
-with metric4:
-
-
-    st.metric(
-
-        "Energy",
-
-        f"{energy}/5"
-
-    )
-
-
-
-# ============================================================
-# Example Trend Graphs
-# ============================================================
-
-
-st.divider()
-
-
-
-st.subheader(
-
-    "📊 Weekly Habit Trends"
-
-)
-
-
-
-chart_data = pd.DataFrame(
-
-    {
-
-        "Day":[
-
-            "Mon",
-
-            "Tue",
-
-            "Wed",
-
-            "Thu",
-
-            "Fri",
-
-            "Sat",
-
-            "Sun"
-
-        ],
-
-        "Sleep":[
-
-            7,
-
-            7.5,
-
-            6.5,
-
-            8,
-
-            7,
-
-            8.5,
-
-            sleep
-
-        ],
-
-        "Screen Time":[
-
-            5,
-
-            6,
-
-            7,
-
-            4,
-
-            8,
-
-            3,
-
-            screen_time
-
-        ]
-
-    }
-
-)
-
-
-
-fig1 = px.line(
-
-    chart_data,
-
-    x="Day",
-
-    y="Sleep",
-
-    markers=True,
-
-    title="Sleep Trend"
-
-)
-
-
-st.plotly_chart(
-
-    fig1,
-
-    use_container_width=True
-
-)
-
-
-
-fig2 = px.line(
-
-    chart_data,
-
-    x="Day",
-
-    y="Screen Time",
-
-    markers=True,
-
-    title="Screen Time Trend"
-
-)
-
-
-st.plotly_chart(
-
-    fig2,
-
-    use_container_width=True
-
-)
-
-
-
-# ============================================================
-# Feedback
-# ============================================================
-
-
-st.divider()
-
-
-
-st.subheader(
-
-    "💬 AI Feedback"
-
-)
-
-
-
-if "prediction_id" in st.session_state:
-
-
-    completed = st.radio(
-
-        "Did you complete the recommendation?",
-
-        [
-
-            "Yes",
-
-            "No"
-
-        ]
-
-    )
-
-
-    rating = st.slider(
-
-        "Rate this recommendation",
-
-        1,
-
-        5,
-
-        4
-
-    )
-
-
+    st.write("")
 
     if st.button(
-
-        "Submit Feedback"
-
+        "Continue to check-in",
+        type="primary",
+        width="stretch",
     ):
 
+        st.session_state.new_participant = False
+        st.rerun()
 
-        save_feedback(
-
-            st.session_state.prediction_id,
-
-            1,
-
-            1 if completed=="Yes" else 0,
-
-            rating
-
-        )
-
-
-        st.success(
-
-            "Feedback saved. Thank you!"
-
-        )
-
+    st.stop()
 
 
 # ============================================================
-# Footer
+# Check-in header
 # ============================================================
 
+st.caption(
+    datetime.now().strftime(
+        "%A, %d %B %Y"
+    )
+)
+
+st.title(
+    "Today's check-in"
+)
+
+st.write(
+    "A short check-in helps NudgeWise understand "
+    "your current habits and context."
+)
 
 st.divider()
 
 
-st.caption(
+# ============================================================
+# Check-in form
+# ============================================================
 
-    "AI Nudge | Personalised Digital Wellbeing Coach"
+with st.form(
+    "daily_checkin"
+):
 
-)
+    st.subheader(
+        "How are you feeling?"
+    )
+
+    left, right = st.columns(
+        2,
+        gap="large",
+    )
+
+    with left:
+
+        sleep = st.number_input(
+            "Sleep",
+            min_value=0.0,
+            max_value=16.0,
+            value=7.5,
+            step=0.5,
+            format="%.1f",
+            help=(
+                "Approximate hours "
+                "of sleep last night."
+            ),
+        )
+
+        mood = st.slider(
+            "Mood",
+            min_value=1,
+            max_value=5,
+            value=3,
+        )
+
+    with right:
+
+        stress = st.slider(
+            "Stress",
+            min_value=1,
+            max_value=5,
+            value=3,
+        )
+
+        energy = st.slider(
+            "Energy",
+            min_value=1,
+            max_value=5,
+            value=3,
+        )
+
+    st.divider()
+
+    st.subheader(
+        "Your digital habits"
+    )
+
+    screen_time = st.number_input(
+        "Recreational screen time",
+        min_value=0.0,
+        max_value=24.0,
+        value=3.0,
+        step=0.5,
+        format="%.1f",
+    )
+
+    activity = st.selectbox(
+        "Current activity",
+        [
+            "Phone",
+            "Studying",
+            "Working",
+            "Relaxing",
+            "Exercise",
+        ],
+    )
+
+    social = st.selectbox(
+        "Social interaction",
+        [
+            "Low",
+            "Medium",
+            "High",
+        ],
+    )
+
+    st.divider()
+
+    submitted = (
+        st.form_submit_button(
+            "Generate personalised guidance",
+            type="primary",
+            width="stretch",
+        )
+    )
+
+
+# ============================================================
+# Submit check-in
+# ============================================================
+
+if submitted:
+
+    try:
+
+        now = datetime.now()
+
+        hour = now.hour
+
+        day_type = (
+            "Weekend"
+            if now.weekday() >= 5
+            else "Weekday"
+        )
+
+        # ----------------------------------------------------
+        # NudgeWise AI v2.5
+        # ----------------------------------------------------
+
+        prediction, confidence = (
+            predict_nudge(
+                sleep=sleep,
+                stress=stress,
+                mood=mood,
+                energy=energy,
+                screen_time=screen_time,
+                activity=activity,
+                day_type=day_type,
+                social=social,
+                hour=hour,
+            )
+        )
+
+        reasons = explain_prediction(
+            prediction=prediction,
+            sleep=sleep,
+            stress=stress,
+            screen_time=screen_time,
+            hour=hour,
+            energy=energy,
+            mood=mood,
+        )
+
+        # ----------------------------------------------------
+        # Save check-in
+        # ----------------------------------------------------
+
+        checkin_id = save_checkin(
+            user_id=st.session_state.user_id,
+            sleep=sleep,
+            stress=stress,
+            mood=mood,
+            energy=energy,
+            screen_time=screen_time,
+            activity=activity,
+            social=social,
+            hour=hour,
+        )
+
+        prediction_id = save_prediction(
+            checkin_id=checkin_id,
+            nudge=prediction,
+            confidence=confidence,
+        )
+
+        # ----------------------------------------------------
+        # Session
+        # ----------------------------------------------------
+
+        st.session_state.prediction = (
+            prediction
+        )
+
+        st.session_state.confidence = (
+            confidence
+        )
+
+        st.session_state.reasons = (
+            reasons
+        )
+
+        st.session_state.prediction_id = (
+            prediction_id
+        )
+
+        st.session_state.checkin_submitted = (
+            True
+        )
+
+        st.session_state.feedback_submitted = (
+            False
+        )
+
+        # ----------------------------------------------------
+        # Go straight to dashboard
+        # ----------------------------------------------------
+
+        st.switch_page(
+            "pages/dashboard.py"
+        )
+
+    except Exception as error:
+
+        st.error(
+            "NudgeWise could not complete "
+            "this check-in."
+        )
+
+        st.exception(
+            error
+        )

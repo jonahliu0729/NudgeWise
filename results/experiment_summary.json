@@ -1,0 +1,44 @@
+{
+  "version": "NudgeWise AI v2.4",
+  "rows": 20000,
+  "features": [
+    "sleep",
+    "stress",
+    "mood",
+    "energy",
+    "screen_time",
+    "hour",
+    "activity",
+    "social",
+    "day_type"
+  ],
+  "classes": [
+    "Connect socially",
+    "Maintain habits",
+    "Prepare for bed",
+    "Reduce screen time",
+    "Stay active",
+    "Take a short break"
+  ],
+  "selected_model": "Logistic Regression",
+  "calibration": "rejected",
+  "raw_metrics": {
+    "accuracy": 0.41475,
+    "balanced_accuracy": 0.3933992096686243,
+    "macro_f1": 0.38168044466264384,
+    "log_loss": 1.4919774246892596
+  },
+  "calibrated_metrics": {
+    "accuracy": 0.43625,
+    "balanced_accuracy": 0.35092224840726544,
+    "macro_f1": 0.3514900586477056,
+    "log_loss": 1.4288112647237008
+  },
+  "production_metrics": {
+    "accuracy": 0.41475,
+    "balanced_accuracy": 0.3933992096686243,
+    "macro_f1": 0.38168044466264384,
+    "log_loss": 1.4919774246892596
+  },
+  "random_state": 42
+}
