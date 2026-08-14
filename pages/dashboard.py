@@ -1,13 +1,14 @@
 """
 pages/dashboard.py
 
-NudgeWise Version 2.6
+NudgeWise Version 2.7
 Authenticated personal wellbeing dashboard.
 
 Features:
 - participant-specific data
 - research-level wellbeing indicator
-- latest AI recommendation
+- v2.6 AI intervention model
+- v2.7 contextual action engine
 - model certainty and alternatives
 - local explainability
 - recommendation feedback
@@ -86,6 +87,10 @@ from predict import (
 from services.auth import (
     ensure_current_participant,
     is_logged_in,
+)
+
+from services.recommendations import (
+    personalise_recommendation,
 )
 
 
@@ -258,14 +263,15 @@ def get_day_type_for_date(
     """
     Determine weekday/weekend from the check-in date itself.
 
-    This matters for retrospective entries because using the
-    current day would give the AI incorrect context.
+    This matters for retrospective entries because using today's
+    weekday/weekend status would give the AI incorrect context.
     """
 
     parsed = pd.to_datetime(
         date_value,
         errors="coerce",
     )
+
 
     if pd.isna(
         parsed
@@ -276,6 +282,7 @@ def get_day_type_for_date(
             if now.weekday() >= 5
             else "Weekday"
         )
+
 
     return (
         "Weekend"
@@ -289,9 +296,6 @@ def get_prediction_for_checkin(
 ):
     """
     Find the stored prediction belonging to a specific check-in.
-
-    This avoids accidentally attaching feedback to a prediction
-    from a different date.
     """
 
     for prediction_row in prediction_rows:
@@ -306,6 +310,7 @@ def get_prediction_for_checkin(
 
             return prediction_row
 
+
     return None
 
 
@@ -317,7 +322,7 @@ def wellbeing_indicator(
     checkin: pd.Series,
 ) -> int:
     """
-    NudgeWise v2.6 product-level wellbeing indicator.
+    NudgeWise product-level wellbeing indicator.
 
     This is NOT a clinical assessment.
 
@@ -332,10 +337,6 @@ def wellbeing_indicator(
     Screen time is deliberately NOT converted directly into a
     wellbeing-score penalty because NudgeWise does not assume a
     universal evidence-backed harmful screen-time threshold.
-
-    Activity uses 60 minutes only as a research reference derived
-    from adolescent physical-activity guidance. It is not treated
-    as a diagnostic daily pass/fail threshold.
     """
 
     sleep = safe_number(
@@ -344,12 +345,14 @@ def wellbeing_indicator(
         )
     )
 
+
     stress = safe_number(
         checkin.get(
             "stress"
         ),
         3.0,
     )
+
 
     mood = safe_number(
         checkin.get(
@@ -358,6 +361,7 @@ def wellbeing_indicator(
         3.0,
     )
 
+
     energy = safe_number(
         checkin.get(
             "energy"
@@ -365,11 +369,13 @@ def wellbeing_indicator(
         3.0,
     )
 
+
     activity_minutes = safe_number(
         checkin.get(
             "activity_minutes"
         )
     )
+
 
     connectedness = safe_number(
         checkin.get(
@@ -381,9 +387,6 @@ def wellbeing_indicator(
 
     # --------------------------------------------------------
     # Sleep
-    #
-    # 8 hours is the lower evidence-backed adolescent reference.
-    # Values above that are not rewarded indefinitely.
     # --------------------------------------------------------
 
     sleep_component = clamp(
@@ -441,9 +444,6 @@ def wellbeing_indicator(
 
     # --------------------------------------------------------
     # Physical activity
-    #
-    # 60 minutes is used as a smooth daily research reference,
-    # not a clinical threshold.
     # --------------------------------------------------------
 
     activity_component = clamp(
@@ -454,9 +454,6 @@ def wellbeing_indicator(
 
     # --------------------------------------------------------
     # Connectedness
-    #
-    # 1 = not connected at all
-    # 5 = very connected
     # --------------------------------------------------------
 
     connection_component = clamp(
@@ -960,15 +957,101 @@ ai_details = get_prediction_details(
 )
 
 
+# ============================================================
+# v2.7 contextual action
+# ============================================================
+
+contextual_guidance = (
+    personalise_recommendation(
+        prediction=ai_details[
+            "prediction"
+        ],
+
+        sleep=safe_number(
+            latest.get(
+                "sleep"
+            )
+        ),
+
+        stress=int(
+            safe_number(
+                latest.get(
+                    "stress"
+                ),
+                3,
+            )
+        ),
+
+        mood=int(
+            safe_number(
+                latest.get(
+                    "mood"
+                ),
+                3,
+            )
+        ),
+
+        energy=int(
+            safe_number(
+                latest.get(
+                    "energy"
+                ),
+                3,
+            )
+        ),
+
+        screen_time=safe_number(
+            latest.get(
+                "screen_time"
+            )
+        ),
+
+        activity_minutes=int(
+            safe_number(
+                latest.get(
+                    "activity_minutes"
+                ),
+                0,
+            )
+        ),
+
+        connectedness=int(
+            safe_number(
+                latest.get(
+                    "connectedness"
+                ),
+                3,
+            )
+        ),
+
+        activity=str(
+            latest.get(
+                "activity",
+                "Relaxing",
+            )
+        ),
+
+        hour=int(
+            safe_number(
+                latest.get(
+                    "hour"
+                ),
+                now.hour,
+            )
+        ),
+    )
+)
+
+
+# ============================================================
+# Personalised recommendation card
+# ============================================================
+
 recommendation(
-    title=ai_details[
-        "prediction"
-    ],
+    title=contextual_guidance.title,
 
     explanation=(
-        "NudgeWise selected this option from six possible "
-        "digital wellbeing interventions based on the combined "
-        "pattern in this check-in."
+        contextual_guidance.action
     ),
 
     confidence=(
@@ -980,6 +1063,16 @@ recommendation(
             "certainty"
         ]
     ),
+)
+
+
+st.caption(
+    (
+        f"AI intervention: "
+        f"{ai_details['prediction']} "
+        f"· Action ID: "
+        f"{contextual_guidance.action_id}"
+    )
 )
 
 
@@ -1057,10 +1150,43 @@ st.write("")
 section_heading(
     "Why NudgeWise suggested this",
     (
-        "These statements come from local model-sensitivity "
-        "analysis. They describe which inputs most supported "
-        "this model output and do not imply causation."
+        "NudgeWise first selects an intervention using the "
+        "v2.6 AI model, then adapts the specific action to "
+        "your current context."
     ),
+)
+
+
+# ------------------------------------------------------------
+# Contextual action explanation
+# ------------------------------------------------------------
+
+st.markdown(
+    "**Why this specific action**"
+)
+
+
+st.write(
+    contextual_guidance.reason
+)
+
+
+st.write("")
+
+
+# ------------------------------------------------------------
+# AI model explanation
+# ------------------------------------------------------------
+
+st.markdown(
+    "**Why the AI selected this intervention**"
+)
+
+
+st.caption(
+    "These explanations come from local model-sensitivity "
+    "analysis. They describe which inputs supported the model "
+    "output and do not imply causation."
 )
 
 
@@ -1074,7 +1200,7 @@ for reason in ai_details[
 
 
 # ============================================================
-# Influential input details
+# Model sensitivity
 # ============================================================
 
 with st.expander(
@@ -1089,11 +1215,13 @@ with st.expander(
 
     positive_sensitivities = [
         item
+
         for item
         in ai_details.get(
             "sensitivities",
             []
         )
+
         if item[
             "effect"
         ] > 0
@@ -1109,6 +1237,7 @@ with st.expander(
             st.write(
                 f"**{item['display_name'].title()}**"
             )
+
 
             st.caption(
                 f"Local probability influence: "
@@ -1470,9 +1599,11 @@ for _, row in recent.iterrows():
         parsed_date.strftime(
             "%A, %d %B"
         )
+
         if not pd.isna(
             parsed_date
         )
+
         else checkin_date
     )
 
@@ -1766,12 +1897,21 @@ with st.expander(
         because NudgeWise does not assume one universal evidence-backed
         harmful screen-time threshold.
 
+        The v2.6 AI model selects one of six broad intervention classes.
+
+        The v2.7 contextual action engine then translates that class
+        into a more specific action based on the participant's current
+        context.
+
+        The contextual action engine does not override the AI-selected
+        intervention.
+
         Model probabilities describe the relative preferences learned
         from the NudgeWise synthetic decision model. They are not
         probabilities that an intervention will improve wellbeing.
 
-        The model's local explanations describe sensitivity to input
-        changes. They should not be interpreted as causal effects.
+        Local model explanations describe sensitivity to input changes.
+        They should not be interpreted as causal effects.
 
         Retrospective check-ins are labelled separately because they
         rely on recalled rather than same-day responses.
