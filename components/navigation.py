@@ -1,47 +1,63 @@
 """
 components/navigation.py
 
-Shared navigation for every NudgeWise page.
+Shared authenticated navigation for NudgeWise Version 2.
+
+Provides:
+- NudgeWise branding
+- participant identity
+- Check-in navigation
+- Wellbeing dashboard navigation
+- usability feedback navigation
+- sign out
+- hides Streamlit's automatic page list
 """
 
 from __future__ import annotations
 
 import streamlit as st
 
-from database import get_user
+from database import (
+    get_user,
+)
+
+from services.auth import (
+    ensure_current_participant,
+    is_logged_in,
+    logout,
+)
 
 
 # ============================================================
-# Session reset
+# Hide Streamlit default page navigation
 # ============================================================
 
-def switch_participant() -> None:
+def hide_streamlit_navigation() -> None:
     """
-    End the current participant session.
+    Hide Streamlit's automatic multipage navigation.
 
-    Database records are NOT deleted.
+    NudgeWise renders its own branded navigation instead.
     """
 
-    keys_to_clear = [
-        "user_id",
-        "participant_code",
-        "prediction",
-        "confidence",
-        "prediction_id",
-        "reasons",
-        "checkin_submitted",
-        "feedback_submitted",
-        "new_participant",
-    ]
+    st.markdown(
+        """
+        <style>
 
-    for key in keys_to_clear:
-        st.session_state.pop(
-            key,
-            None,
-        )
+        [data-testid="stSidebarNav"] {
+            display: none !important;
+        }
 
-    st.switch_page(
-        "app.py"
+        [data-testid="stSidebarNavItems"] {
+            display: none !important;
+        }
+
+        section[data-testid="stSidebar"] nav {
+            display: none !important;
+        }
+
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
 
 
@@ -50,9 +66,29 @@ def switch_participant() -> None:
 # ============================================================
 
 def render_sidebar() -> None:
-    """Render the same sidebar everywhere in NudgeWise."""
+    """Render the shared NudgeWise sidebar."""
+
+    hide_streamlit_navigation()
+
+
+    # --------------------------------------------------------
+    # Restore participant from Google authentication
+    # --------------------------------------------------------
+
+    if is_logged_in():
+
+        ensure_current_participant()
+
+
+    # --------------------------------------------------------
+    # Sidebar
+    # --------------------------------------------------------
 
     with st.sidebar:
+
+        # ----------------------------------------------------
+        # Brand
+        # ----------------------------------------------------
 
         st.markdown(
             """
@@ -61,6 +97,7 @@ def render_sidebar() -> None:
                 font-weight:650;
                 letter-spacing:-0.035em;
                 margin-bottom:0.12rem;
+                color:#20201F;
             ">
                 NudgeWise
             </div>
@@ -76,15 +113,31 @@ def render_sidebar() -> None:
             unsafe_allow_html=True,
         )
 
+
         st.divider()
+
+
+        # ----------------------------------------------------
+        # Logged out
+        # ----------------------------------------------------
+
+        if not is_logged_in():
+
+            st.caption(
+                "Sign in to begin."
+            )
+
+            return
+
+
+        # ----------------------------------------------------
+        # Participant
+        # ----------------------------------------------------
 
         user_id = st.session_state.get(
             "user_id"
         )
 
-        # ----------------------------------------------------
-        # Participant signed in
-        # ----------------------------------------------------
 
         if user_id is not None:
 
@@ -92,75 +145,76 @@ def render_sidebar() -> None:
                 user_id
             )
 
+
             if participant:
 
                 nickname = (
-                    participant.get("nickname")
-                    or participant.get("name")
+                    participant.get(
+                        "nickname"
+                    )
+                    or participant.get(
+                        "name"
+                    )
                     or "Participant"
                 )
 
-                participant_code = (
-                    participant.get(
-                        "participant_code"
-                    )
-                    or "Legacy participant"
-                )
 
                 st.caption(
-                    "CURRENT PARTICIPANT"
+                    "YOUR PROFILE"
                 )
+
 
                 st.markdown(
                     f"""
                     <div style="
-                        font-size:0.95rem;
+                        font-size:0.96rem;
                         font-weight:600;
                         color:#20201F;
-                    ">
-                        {nickname}
-                    </div>
-
-                    <div style="
-                        font-size:0.76rem;
-                        color:#85857F;
                         margin-top:0.15rem;
                     ">
-                        {participant_code}
+                        {nickname}
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
 
+
                 st.divider()
+
+
+                # =================================================
+                # Navigation
+                # =================================================
 
                 st.page_link(
                     "app.py",
                     label="Check-in",
                 )
 
+
                 st.page_link(
                     "pages/dashboard.py",
                     label="Your wellbeing",
                 )
 
+
+                st.page_link(
+                    "pages/feedback.py",
+                    label="Give feedback",
+                )
+
+
                 st.divider()
 
-                if st.button(
-                    "Switch participant",
-                    type="secondary",
-                    width="stretch",
-                ):
-
-                    switch_participant()
 
         # ----------------------------------------------------
-        # No participant
+        # Sign out
         # ----------------------------------------------------
 
-        else:
+        if st.button(
+            "Sign out",
+            type="secondary",
+            width="stretch",
+        ):
 
-            st.caption(
-                "Start or resume a participant session "
-                "to use NudgeWise."
-            )
+            logout()

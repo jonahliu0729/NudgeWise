@@ -1,114 +1,238 @@
 """
-SmartScreen presentation components.
+components/cards.py
 
-Clean, native Streamlit components for the Version 2 dashboard.
-No inline HTML is used for dashboard content.
+Reusable presentation components for NudgeWise.
+
+This version avoids large nested HTML blocks because Streamlit can
+sometimes display them as literal text when formatting becomes complex.
 """
 
 from __future__ import annotations
 
-from typing import Optional
+from html import escape
 
 import streamlit as st
 
 
+# ============================================================
+# Helpers
+# ============================================================
+
+def _safe(value) -> str:
+    if value is None:
+        return ""
+    return escape(str(value))
+
+
+# ============================================================
+# Divider
+# ============================================================
+
+def divider() -> None:
+    st.divider()
+
+
+# ============================================================
+# Section heading
+# ============================================================
+
 def section_heading(
     title: str,
-    description: Optional[str] = None,
+    description: str | None = None,
 ) -> None:
-    """Render a clean section heading."""
 
-    st.subheader(title)
+    st.markdown(
+        f"""
+<div style="font-size:1.22rem;font-weight:600;letter-spacing:-0.025em;color:#20201F;margin-bottom:0.35rem;">
+{_safe(title)}
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
     if description:
-        st.caption(description)
+        st.markdown(
+            f"""
+<div style="font-size:0.90rem;color:#85857F;line-height:1.55;max-width:680px;margin-bottom:1.35rem;">
+{_safe(description)}
+</div>
+""",
+            unsafe_allow_html=True,
+        )
 
+
+# ============================================================
+# Wellbeing score
+# ============================================================
 
 def wellbeing_score(
-    score: int,
+    score: int | float,
     description: str,
 ) -> None:
-    """Render the main wellbeing indicator."""
+
+    try:
+        score = int(round(float(score)))
+    except (TypeError, ValueError):
+        score = 0
+
+    score = max(0, min(100, score))
 
     st.caption("Wellbeing indicator")
 
-    score_column, description_column = st.columns(
-        [1, 3],
+    score_col, text_col = st.columns(
+        [1, 2.4],
         gap="large",
     )
 
-    with score_column:
-        st.metric(
-            label="Current indicator",
-            value=f"{score} / 100",
+    with score_col:
+
+        st.caption("Current indicator")
+
+        st.markdown(
+            f"""
+<div style="display:flex;align-items:baseline;gap:0.4rem;">
+    <span style="font-size:3.5rem;font-weight:650;letter-spacing:-0.06em;line-height:1;color:#20201F;">
+        {score}
+    </span>
+    <span style="font-size:1rem;color:#A0A09A;">
+        / 100
+    </span>
+</div>
+""",
+            unsafe_allow_html=True,
         )
 
-    with description_column:
-        st.write("")
-        st.write("")
-        st.write(description)
+    with text_col:
 
+        st.markdown(
+            f"""
+<div style="font-size:1rem;color:#696963;line-height:1.6;padding-top:1.45rem;max-width:560px;">
+{_safe(description)}
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
+
+# ============================================================
+# Metric
+# ============================================================
+
+def metric(
+    label: str,
+    value: str,
+    subtitle: str = "",
+) -> None:
+
+    st.caption(
+        _safe(label)
+    )
+
+    st.markdown(
+        f"""
+<div style="font-size:2.7rem;font-weight:620;letter-spacing:-0.055em;line-height:1;color:#20201F;margin:0.15rem 0 0.55rem 0;">
+{_safe(value)}
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    if subtitle:
+        st.caption(
+            _safe(subtitle)
+        )
+
+
+# ============================================================
+# Metric row
+# ============================================================
 
 def metric_row(
     metrics: list[tuple[str, str, str]],
 ) -> None:
-    """
-    Render a row of wellbeing metrics.
 
-    Each metric should be:
-
-        (label, value, note)
-    """
+    if not metrics:
+        return
 
     columns = st.columns(
         len(metrics),
         gap="large",
     )
 
-    for column, metric in zip(columns, metrics):
-        label, value, note = metric
+    for column, item in zip(
+        columns,
+        metrics,
+    ):
+
+        if len(item) == 2:
+            label, value = item
+            subtitle = ""
+        else:
+            label, value, subtitle = item
 
         with column:
-            st.metric(
+            metric(
                 label=label,
                 value=value,
+                subtitle=subtitle,
             )
 
-            if note:
-                st.caption(note)
 
+# ============================================================
+# Recommendation
+# ============================================================
 
 def recommendation(
     title: str,
     explanation: str,
-    confidence: str,
+    confidence: str | None = None,
 ) -> None:
-    """Render the model's current recommendation."""
 
-    st.caption("Personalised guidance")
+    with st.container(
+        border=True
+    ):
 
-    st.markdown(
-        f"### {title}"
-    )
+        st.markdown(
+            f"""
+<div style="font-size:1.3rem;font-weight:620;letter-spacing:-0.03em;color:#20201F;margin-bottom:0.45rem;">
+{_safe(title)}
+</div>
+""",
+            unsafe_allow_html=True,
+        )
 
-    st.write(explanation)
+        st.write(
+            explanation
+        )
 
-    st.caption(
-        f"Model confidence: {confidence}"
-    )
+        if confidence:
+            st.caption(
+                f"Model confidence: {confidence}"
+            )
 
+
+# ============================================================
+# Empty state
+# ============================================================
 
 def empty_state(
     title: str,
     description: str,
 ) -> None:
-    """Render a simple empty state."""
 
-    st.subheader(title)
-    st.caption(description)
+    with st.container(
+        border=True
+    ):
 
+        st.markdown(
+            f"""
+<div style="font-size:1rem;font-weight:600;color:#30302E;margin-bottom:0.35rem;">
+{_safe(title)}
+</div>
+""",
+            unsafe_allow_html=True,
+        )
 
-def divider() -> None:
-    """Render a subtle section divider."""
-
-    st.divider()
+        st.write(
+            description
+        )

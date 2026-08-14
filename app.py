@@ -1,13 +1,21 @@
 """
-NudgeWise
-Digital wellbeing, made personal.
+app.py
 
-Version 2 participant check-in application.
+NudgeWise Version 2
+Authenticated daily digital wellbeing check-in.
+
+Key behaviour:
+- Google-authenticated participants
+- one check-in per participant per NZ calendar day
+- existing daily check-ins can be edited
+- editing reruns the AI recommendation
+- edited recommendations replace the previous prediction
 """
 
 from __future__ import annotations
 
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 
@@ -16,12 +24,15 @@ from components.navigation import (
 )
 
 from database import (
-    create_participant,
+    DuplicateCheckinError,
+    create_authenticated_participant,
     create_tables,
+    get_checkin_for_date,
     get_user,
-    get_user_by_code,
+    replace_prediction,
     save_checkin,
     save_prediction,
+    update_checkin,
 )
 
 from predict import (
@@ -29,9 +40,26 @@ from predict import (
     predict_nudge,
 )
 
+from services.auth import (
+    ensure_current_participant,
+    get_auth_hash,
+    get_google_display_name,
+    is_logged_in,
+    login,
+)
+
 
 # ============================================================
-# Page
+# Configuration
+# ============================================================
+
+NZ_TIMEZONE = ZoneInfo(
+    "Pacific/Auckland"
+)
+
+
+# ============================================================
+# Page configuration
 # ============================================================
 
 st.set_page_config(
@@ -43,7 +71,7 @@ st.set_page_config(
 
 
 # ============================================================
-# Styling
+# Visual system
 # ============================================================
 
 st.markdown(
@@ -83,6 +111,11 @@ st.markdown(
         letter-spacing:-0.025em !important;
     }
 
+    h3 {
+        font-size:1.08rem !important;
+        font-weight:600 !important;
+    }
+
     p {
         color:#696963;
         line-height:1.6;
@@ -94,6 +127,12 @@ st.markdown(
         margin:2.3rem 0;
     }
 
+    [data-testid="stForm"] {
+        border:none !important;
+        padding:0 !important;
+        background:transparent !important;
+    }
+
     .stButton > button,
     .stFormSubmitButton > button {
         min-height:3rem;
@@ -101,23 +140,25 @@ st.markdown(
         font-weight:600 !important;
     }
 
-    [data-testid="stForm"] {
-        border:none !important;
-        padding:0 !important;
+    .daily-status {
+        background:#F4F4F1;
+        border:1px solid #E5E5E0;
+        border-radius:14px;
+        padding:1rem 1.15rem;
+        margin:0.8rem 0 1.6rem 0;
     }
 
-    .participant-code {
-        font-size:2rem;
-        font-weight:650;
-        letter-spacing:-0.04em;
-        color:#171717;
-        margin:0.5rem 0 0.6rem 0;
+    .daily-status-title {
+        color:#30302E;
+        font-size:0.88rem;
+        font-weight:600;
+        margin-bottom:0.25rem;
     }
 
-    .quiet {
-        font-size:0.86rem;
-        color:#85857F;
-        line-height:1.55;
+    .daily-status-text {
+        color:#777771;
+        font-size:0.82rem;
+        line-height:1.5;
     }
 
     </style>
@@ -145,13 +186,15 @@ defaults = {
     "reasons": [],
     "checkin_submitted": False,
     "feedback_submitted": False,
-    "new_participant": False,
 }
 
-for key, default in defaults.items():
+for key, value in defaults.items():
 
     if key not in st.session_state:
-        st.session_state[key] = default
+
+        st.session_state[
+            key
+        ] = value
 
 
 # ============================================================
@@ -162,167 +205,134 @@ render_sidebar()
 
 
 # ============================================================
-# PARTICIPANT ENTRY
+# Authentication gate
 # ============================================================
 
-if st.session_state.user_id is None:
+if not is_logged_in():
 
     st.caption(
-        datetime.now().strftime(
-            "%A, %d %B %Y"
-        )
+        "NUDGEWISE"
     )
 
     st.title(
-        "Welcome to NudgeWise"
+        "Digital wellbeing, made personal."
     )
 
     st.write(
-        "Start a new participant session or resume "
-        "an existing wellbeing history."
+        "Sign in securely to keep your check-ins "
+        "and wellbeing history connected across visits."
     )
 
-    st.divider()
+    st.write("")
 
-    new_tab, returning_tab = st.tabs(
-        [
-            "New participant",
-            "Returning participant",
-        ]
+    if st.button(
+        "Continue with Google",
+        type="primary",
+        width="stretch",
+    ):
+
+        login()
+
+    st.caption(
+        "NudgeWise does not store your Google password."
     )
 
-    # --------------------------------------------------------
-    # New participant
-    # --------------------------------------------------------
+    st.stop()
 
-    with new_tab:
 
-        st.subheader(
-            "Start a new profile"
+# ============================================================
+# Restore participant
+# ============================================================
+
+participant = (
+    ensure_current_participant()
+)
+
+
+# ============================================================
+# First-time authenticated participant
+# ============================================================
+
+if participant is None:
+
+    st.caption(
+        "WELCOME TO NUDGEWISE"
+    )
+
+    st.title(
+        "Set up your profile"
+    )
+
+    google_name = (
+        get_google_display_name()
+    )
+
+    st.write(
+        "Your Google account has been verified. "
+        "NudgeWise only needs a small amount of "
+        "information to create your profile."
+    )
+
+    with st.form(
+        "profile_setup"
+    ):
+
+        nickname = st.text_input(
+            "Display name",
+            value=google_name,
+            help=(
+                "Used to personalise your "
+                "NudgeWise interface."
+            ),
         )
 
-        st.write(
-            "NudgeWise uses an anonymous participant code "
-            "to keep each person's check-ins separate."
+        age = st.number_input(
+            "Age",
+            min_value=10,
+            max_value=18,
+            value=15,
+            step=1,
         )
 
-        with st.form(
-            "new_participant_form"
-        ):
+        create_profile = (
+            st.form_submit_button(
+                "Create my NudgeWise profile",
+                type="primary",
+                width="stretch",
+            )
+        )
 
-            nickname = st.text_input(
-                "Nickname",
-                placeholder="Optional display name",
+    if create_profile:
+
+        auth_hash = (
+            get_auth_hash()
+        )
+
+        if auth_hash is None:
+
+            st.error(
+                "NudgeWise could not verify "
+                "your authenticated account."
             )
 
-            age = st.number_input(
-                "Age",
-                min_value=10,
-                max_value=18,
-                value=15,
-                step=1,
-            )
+            st.stop()
 
-            create_clicked = (
-                st.form_submit_button(
-                    "Create participant",
-                    type="primary",
-                    width="stretch",
-                )
-            )
-
-        if create_clicked:
-
-            participant = create_participant(
+        participant = (
+            create_authenticated_participant(
+                auth_subject_hash=auth_hash,
                 nickname=(
                     nickname.strip()
                     or "Participant"
                 ),
                 age=int(age),
             )
-
-            st.session_state.user_id = (
-                participant["id"]
-            )
-
-            st.session_state.participant_code = (
-                participant[
-                    "participant_code"
-                ]
-            )
-
-            st.session_state.new_participant = (
-                True
-            )
-
-            st.rerun()
-
-    # --------------------------------------------------------
-    # Returning participant
-    # --------------------------------------------------------
-
-    with returning_tab:
-
-        st.subheader(
-            "Resume your profile"
         )
 
-        st.write(
-            "Enter the participant code you received "
-            "when you first used NudgeWise."
+        st.session_state.user_id = (
+            participant["id"]
         )
 
-        with st.form(
-            "returning_participant_form"
-        ):
-
-            participant_code = (
-                st.text_input(
-                    "Participant code",
-                    placeholder="NW-ABC234",
-                )
-            )
-
-            resume_clicked = (
-                st.form_submit_button(
-                    "Continue",
-                    type="primary",
-                    width="stretch",
-                )
-            )
-
-        if resume_clicked:
-
-            participant = (
-                get_user_by_code(
-                    participant_code
-                )
-            )
-
-            if participant is None:
-
-                st.error(
-                    "That participant code "
-                    "could not be found."
-                )
-
-            else:
-
-                st.session_state.user_id = (
-                    participant["id"]
-                )
-
-                st.session_state.participant_code = (
-                    participant[
-                        "participant_code"
-                    ]
-                )
-
-                st.session_state.new_participant = (
-                    False
-                )
-
-                st.rerun()
+        st.rerun()
 
     st.stop()
 
@@ -337,98 +347,198 @@ participant = get_user(
 
 if participant is None:
 
-    st.session_state.user_id = None
-    st.rerun()
-
-
-nickname = (
-    participant.get("nickname")
-    or participant.get("name")
-    or "Participant"
-)
-
-participant_code = (
-    participant.get("participant_code")
-)
-
-
-# ============================================================
-# Newly created participant
-# ============================================================
-
-if st.session_state.new_participant:
-
-    st.caption(
-        "PARTICIPANT PROFILE CREATED"
+    st.error(
+        "Your NudgeWise profile could not be loaded."
     )
-
-    st.title(
-        f"Welcome, {nickname}"
-    )
-
-    st.write(
-        "Your participant code keeps future check-ins "
-        "connected to this wellbeing history."
-    )
-
-    st.markdown(
-        f"""
-        <div class="participant-code">
-            {participant_code}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        """
-        <div class="quiet">
-            Keep this code if you want to return to the same
-            profile later. It is not a password and should not
-            contain personal information.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.write("")
-
-    if st.button(
-        "Continue to check-in",
-        type="primary",
-        width="stretch",
-    ):
-
-        st.session_state.new_participant = False
-        st.rerun()
 
     st.stop()
 
 
+nickname = (
+    participant.get(
+        "nickname"
+    )
+    or "Participant"
+)
+
+
 # ============================================================
-# Check-in header
+# Current NZ date and time
+# ============================================================
+
+now = datetime.now(
+    NZ_TIMEZONE
+)
+
+today_date = now.date()
+
+today_string = (
+    today_date.isoformat()
+)
+
+current_hour = now.hour
+
+day_type = (
+    "Weekend"
+    if now.weekday() >= 5
+    else "Weekday"
+)
+
+
+# ============================================================
+# Existing daily check-in
+# ============================================================
+
+existing_checkin = (
+    get_checkin_for_date(
+        user_id=st.session_state.user_id,
+        checkin_date=today_string,
+    )
+)
+
+is_editing = (
+    existing_checkin is not None
+)
+
+
+# ============================================================
+# Header
 # ============================================================
 
 st.caption(
-    datetime.now().strftime(
+    now.strftime(
         "%A, %d %B %Y"
     )
 )
 
-st.title(
-    "Today's check-in"
-)
+if is_editing:
 
-st.write(
-    "A short check-in helps NudgeWise understand "
-    "your current habits and context."
-)
+    st.title(
+        "Edit today's check-in"
+    )
+
+    st.write(
+        f"Welcome back, {nickname}. "
+        "You have already completed today's check-in. "
+        "You can update it below if something was entered incorrectly."
+    )
+
+    st.markdown(
+        """
+        <div class="daily-status">
+            <div class="daily-status-title">
+                Today's check-in is already recorded
+            </div>
+            <div class="daily-status-text">
+                Saving changes will update today's record and
+                regenerate your NudgeWise recommendation.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+else:
+
+    st.title(
+        "Today's check-in"
+    )
+
+    st.write(
+        f"Welcome back, {nickname}. "
+        "This short check-in helps NudgeWise understand "
+        "your current habits and context."
+    )
+
 
 st.divider()
 
 
 # ============================================================
-# Check-in form
+# Prefill values
+# ============================================================
+
+if is_editing:
+
+    default_sleep = float(
+        existing_checkin["sleep"]
+    )
+
+    default_stress = int(
+        existing_checkin["stress"]
+    )
+
+    default_mood = int(
+        existing_checkin["mood"]
+    )
+
+    default_energy = int(
+        existing_checkin["energy"]
+    )
+
+    default_screen_time = float(
+        existing_checkin["screen_time"]
+    )
+
+    default_activity = (
+        existing_checkin["activity"]
+    )
+
+    default_social = (
+        existing_checkin["social"]
+    )
+
+else:
+
+    default_sleep = 7.5
+    default_stress = 3
+    default_mood = 3
+    default_energy = 3
+    default_screen_time = 3.0
+    default_activity = "Phone"
+    default_social = "Medium"
+
+
+activity_options = [
+    "Phone",
+    "Studying",
+    "Working",
+    "Relaxing",
+    "Exercise",
+]
+
+social_options = [
+    "Low",
+    "Medium",
+    "High",
+]
+
+
+if default_activity not in activity_options:
+
+    default_activity = "Phone"
+
+
+if default_social not in social_options:
+
+    default_social = "Medium"
+
+
+activity_index = (
+    activity_options.index(
+        default_activity
+    )
+)
+
+social_index = (
+    social_options.index(
+        default_social
+    )
+)
+
+
+# ============================================================
+# Daily check-in form
 # ============================================================
 
 with st.form(
@@ -450,7 +560,7 @@ with st.form(
             "Sleep",
             min_value=0.0,
             max_value=16.0,
-            value=7.5,
+            value=default_sleep,
             step=0.5,
             format="%.1f",
             help=(
@@ -463,7 +573,7 @@ with st.form(
             "Mood",
             min_value=1,
             max_value=5,
-            value=3,
+            value=default_mood,
         )
 
     with right:
@@ -472,14 +582,14 @@ with st.form(
             "Stress",
             min_value=1,
             max_value=5,
-            value=3,
+            value=default_stress,
         )
 
         energy = st.slider(
             "Energy",
             min_value=1,
             max_value=5,
-            value=3,
+            value=default_energy,
         )
 
     st.divider()
@@ -492,36 +602,38 @@ with st.form(
         "Recreational screen time",
         min_value=0.0,
         max_value=24.0,
-        value=3.0,
+        value=default_screen_time,
         step=0.5,
         format="%.1f",
+        help=(
+            "Approximate recreational screen "
+            "time today."
+        ),
     )
 
     activity = st.selectbox(
         "Current activity",
-        [
-            "Phone",
-            "Studying",
-            "Working",
-            "Relaxing",
-            "Exercise",
-        ],
+        activity_options,
+        index=activity_index,
     )
 
     social = st.selectbox(
         "Social interaction",
-        [
-            "Low",
-            "Medium",
-            "High",
-        ],
+        social_options,
+        index=social_index,
     )
 
     st.divider()
 
+    submit_label = (
+        "Save changes"
+        if is_editing
+        else "Generate personalised guidance"
+    )
+
     submitted = (
         st.form_submit_button(
-            "Generate personalised guidance",
+            submit_label,
             type="primary",
             width="stretch",
         )
@@ -529,25 +641,15 @@ with st.form(
 
 
 # ============================================================
-# Submit check-in
+# Process form
 # ============================================================
 
 if submitted:
 
     try:
 
-        now = datetime.now()
-
-        hour = now.hour
-
-        day_type = (
-            "Weekend"
-            if now.weekday() >= 5
-            else "Weekday"
-        )
-
         # ----------------------------------------------------
-        # NudgeWise AI v2.5
+        # Run NudgeWise AI v2.5
         # ----------------------------------------------------
 
         prediction, confidence = (
@@ -560,41 +662,94 @@ if submitted:
                 activity=activity,
                 day_type=day_type,
                 social=social,
-                hour=hour,
+                hour=current_hour,
             )
         )
 
-        reasons = explain_prediction(
-            prediction=prediction,
-            sleep=sleep,
-            stress=stress,
-            screen_time=screen_time,
-            hour=hour,
-            energy=energy,
-            mood=mood,
+        reasons = (
+            explain_prediction(
+                prediction=prediction,
+                sleep=sleep,
+                stress=stress,
+                screen_time=screen_time,
+                hour=current_hour,
+                energy=energy,
+                mood=mood,
+            )
         )
 
         # ----------------------------------------------------
-        # Save check-in
+        # Edit existing daily log
         # ----------------------------------------------------
 
-        checkin_id = save_checkin(
-            user_id=st.session_state.user_id,
-            sleep=sleep,
-            stress=stress,
-            mood=mood,
-            energy=energy,
-            screen_time=screen_time,
-            activity=activity,
-            social=social,
-            hour=hour,
-        )
+        if is_editing:
 
-        prediction_id = save_prediction(
-            checkin_id=checkin_id,
-            nudge=prediction,
-            confidence=confidence,
-        )
+            checkin_id = int(
+                existing_checkin["id"]
+            )
+
+            updated = (
+                update_checkin(
+                    checkin_id=checkin_id,
+                    user_id=(
+                        st.session_state.user_id
+                    ),
+                    sleep=sleep,
+                    stress=stress,
+                    mood=mood,
+                    energy=energy,
+                    screen_time=screen_time,
+                    activity=activity,
+                    social=social,
+                    hour=current_hour,
+                )
+            )
+
+            if not updated:
+
+                st.error(
+                    "NudgeWise could not update "
+                    "today's check-in."
+                )
+
+                st.stop()
+
+            prediction_id = (
+                replace_prediction(
+                    checkin_id=checkin_id,
+                    nudge=prediction,
+                    confidence=confidence,
+                )
+            )
+
+        # ----------------------------------------------------
+        # Create new daily log
+        # ----------------------------------------------------
+
+        else:
+
+            checkin_id = save_checkin(
+                user_id=(
+                    st.session_state.user_id
+                ),
+                sleep=sleep,
+                stress=stress,
+                mood=mood,
+                energy=energy,
+                screen_time=screen_time,
+                activity=activity,
+                social=social,
+                hour=current_hour,
+                checkin_date=today_string,
+            )
+
+            prediction_id = (
+                save_prediction(
+                    checkin_id=checkin_id,
+                    nudge=prediction,
+                    confidence=confidence,
+                )
+            )
 
         # ----------------------------------------------------
         # Session
@@ -625,18 +780,30 @@ if submitted:
         )
 
         # ----------------------------------------------------
-        # Go straight to dashboard
+        # Dashboard
         # ----------------------------------------------------
 
         st.switch_page(
             "pages/dashboard.py"
         )
 
+
+    except DuplicateCheckinError:
+
+        # This protects against duplicate writes even if two
+        # browser submissions happen close together.
+
+        st.warning(
+            "Today's check-in already exists. "
+            "Reload the page to edit it."
+        )
+
+
     except Exception as error:
 
         st.error(
-            "NudgeWise could not complete "
-            "this check-in."
+            "NudgeWise could not save "
+            "your check-in."
         )
 
         st.exception(

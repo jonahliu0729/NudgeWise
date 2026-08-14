@@ -3,15 +3,21 @@ database.py
 
 Persistent SQLite storage for NudgeWise Version 2.
 
-Relationships:
-    participant -> check-ins -> predictions -> feedback
+Supports:
+- authenticated participants
+- one daily check-in per participant
+- editing check-ins
+- deleting check-ins
+- AI predictions
+- recommendation feedback
+- usability feedback
 """
 
 from __future__ import annotations
 
 import secrets
 import sqlite3
-import string
+
 from pathlib import Path
 from typing import Any
 
@@ -29,21 +35,34 @@ DATABASE_PATH = DATABASE_FOLDER / "nudge.db"
 
 
 # ============================================================
+# Custom errors
+# ============================================================
+
+class DuplicateCheckinError(Exception):
+    """Raised when a participant already has a log for that date."""
+
+
+# ============================================================
 # Connection
 # ============================================================
 
 def connect_db() -> sqlite3.Connection:
-    """Return a SQLite connection."""
 
-    connection = sqlite3.connect(DATABASE_PATH)
+    connection = sqlite3.connect(
+        DATABASE_PATH
+    )
 
     connection.row_factory = sqlite3.Row
+
+    connection.execute(
+        "PRAGMA foreign_keys = ON"
+    )
 
     return connection
 
 
 # ============================================================
-# Schema helpers
+# Schema helper
 # ============================================================
 
 def _column_exists(
@@ -51,7 +70,6 @@ def _column_exists(
     table: str,
     column: str,
 ) -> bool:
-    """Check whether a table already contains a column."""
 
     cursor.execute(
         f"PRAGMA table_info({table})"
@@ -66,21 +84,16 @@ def _column_exists(
 
 
 # ============================================================
-# Schema
+# Database setup
 # ============================================================
 
 def create_tables() -> None:
-    """
-    Create database tables and migrate older Version 1/2 schemas.
-
-    Existing data is preserved.
-    """
 
     connection = connect_db()
     cursor = connection.cursor()
 
     # --------------------------------------------------------
-    # Users / participants
+    # Users
     # --------------------------------------------------------
 
     cursor.execute(
@@ -94,7 +107,17 @@ def create_tables() -> None:
         """
     )
 
-    # Add V2 participant fields without deleting old data.
+    if not _column_exists(
+        cursor,
+        "users",
+        "nickname",
+    ):
+        cursor.execute(
+            """
+            ALTER TABLE users
+            ADD COLUMN nickname TEXT
+            """
+        )
 
     if not _column_exists(
         cursor,
@@ -111,14 +134,22 @@ def create_tables() -> None:
     if not _column_exists(
         cursor,
         "users",
-        "nickname",
+        "auth_subject_hash",
     ):
         cursor.execute(
             """
             ALTER TABLE users
-            ADD COLUMN nickname TEXT
+            ADD COLUMN auth_subject_hash TEXT
             """
         )
+
+    cursor.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS
+        idx_users_auth_subject_hash
+        ON users(auth_subject_hash)
+        """
+    )
 
     cursor.execute(
         """
@@ -137,7 +168,7 @@ def create_tables() -> None:
         CREATE TABLE IF NOT EXISTS checkins (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-            user_id INTEGER NOT NULL,
+            user_id INTEGER,
 
             sleep REAL,
             stress INTEGER,
@@ -151,11 +182,36 @@ def create_tables() -> None:
 
             hour INTEGER,
 
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-            FOREIGN KEY (user_id)
-                REFERENCES users(id)
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
+        """
+    )
+
+    if not _column_exists(
+        cursor,
+        "checkins",
+        "checkin_date",
+    ):
+        cursor.execute(
+            """
+            ALTER TABLE checkins
+            ADD COLUMN checkin_date TEXT
+            """
+        )
+
+        cursor.execute(
+            """
+            UPDATE checkins
+            SET checkin_date = DATE(created_at)
+            WHERE checkin_date IS NULL
+            """
+        )
+
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS
+        idx_checkins_user_date
+        ON checkins(user_id, checkin_date)
         """
     )
 
@@ -168,21 +224,18 @@ def create_tables() -> None:
         CREATE TABLE IF NOT EXISTS predictions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-            checkin_id INTEGER NOT NULL,
+            checkin_id INTEGER,
 
             predicted_nudge TEXT,
             confidence REAL,
 
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-            FOREIGN KEY (checkin_id)
-                REFERENCES checkins(id)
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """
     )
 
     # --------------------------------------------------------
-    # Feedback
+    # Recommendation feedback
     # --------------------------------------------------------
 
     cursor.execute(
@@ -190,16 +243,60 @@ def create_tables() -> None:
         CREATE TABLE IF NOT EXISTS feedback (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-            prediction_id INTEGER NOT NULL,
+            prediction_id INTEGER,
 
             accepted INTEGER,
             completed INTEGER,
             rating INTEGER,
 
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
 
-            FOREIGN KEY (prediction_id)
-                REFERENCES predictions(id)
+    if not _column_exists(
+        cursor,
+        "feedback",
+        "makes_sense",
+    ):
+        cursor.execute(
+            """
+            ALTER TABLE feedback
+            ADD COLUMN makes_sense INTEGER
+            """
+        )
+
+    if not _column_exists(
+        cursor,
+        "feedback",
+        "comment",
+    ):
+        cursor.execute(
+            """
+            ALTER TABLE feedback
+            ADD COLUMN comment TEXT
+            """
+        )
+
+    # --------------------------------------------------------
+    # Usability feedback
+    # --------------------------------------------------------
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS usability_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            user_id INTEGER,
+
+            ease_of_use INTEGER,
+            interface_clarity INTEGER,
+            trust INTEGER,
+
+            confusing TEXT,
+            improvement TEXT,
+
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """
     )
@@ -209,15 +306,10 @@ def create_tables() -> None:
 
 
 # ============================================================
-# Participant codes
+# Participant code
 # ============================================================
 
 def _generate_participant_code() -> str:
-    """
-    Generate an anonymous participant code.
-
-    Confusing characters such as O/0 and I/1 are excluded.
-    """
 
     alphabet = (
         "ABCDEFGHJKLMNPQRSTUVWXYZ"
@@ -235,7 +327,6 @@ def _generate_participant_code() -> str:
 def _participant_code_exists(
     participant_code: str,
 ) -> bool:
-    """Return True if a participant code already exists."""
 
     connection = connect_db()
     cursor = connection.cursor()
@@ -250,7 +341,10 @@ def _participant_code_exists(
         (participant_code,),
     )
 
-    exists = cursor.fetchone() is not None
+    exists = (
+        cursor.fetchone()
+        is not None
+    )
 
     connection.close()
 
@@ -258,24 +352,21 @@ def _participant_code_exists(
 
 
 # ============================================================
-# Participants
+# Participant creation
 # ============================================================
 
-def create_participant(
+def create_authenticated_participant(
+    auth_subject_hash: str,
     nickname: str,
     age: int,
 ) -> dict[str, Any]:
-    """
-    Create a new anonymous participant.
 
-    Returns:
-        {
-            id,
-            participant_code,
-            nickname,
-            age
-        }
-    """
+    existing = get_user_by_auth_hash(
+        auth_subject_hash
+    )
+
+    if existing is not None:
+        return existing
 
     while True:
 
@@ -288,7 +379,10 @@ def create_participant(
         ):
             break
 
-    clean_nickname = nickname.strip()
+    clean_nickname = (
+        nickname.strip()
+        or "Participant"
+    )
 
     connection = connect_db()
     cursor = connection.cursor()
@@ -299,15 +393,17 @@ def create_participant(
             name,
             nickname,
             age,
-            participant_code
+            participant_code,
+            auth_subject_hash
         )
-        VALUES (?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?)
         """,
         (
             clean_nickname,
             clean_nickname,
             int(age),
             participant_code,
+            auth_subject_hash,
         ),
     )
 
@@ -318,16 +414,20 @@ def create_participant(
 
     return {
         "id": int(user_id),
-        "participant_code": participant_code,
         "nickname": clean_nickname,
         "age": int(age),
+        "participant_code": participant_code,
+        "auth_subject_hash": auth_subject_hash,
     }
 
+
+# ============================================================
+# Participant retrieval
+# ============================================================
 
 def get_user(
     user_id: int,
 ) -> dict[str, Any] | None:
-    """Return one participant by internal ID."""
 
     connection = connect_db()
     cursor = connection.cursor()
@@ -336,10 +436,11 @@ def get_user(
         """
         SELECT
             id,
-            participant_code,
-            nickname,
             name,
+            nickname,
             age,
+            participant_code,
+            auth_subject_hash,
             created_at
         FROM users
         WHERE id = ?
@@ -357,16 +458,9 @@ def get_user(
     return dict(row)
 
 
-def get_user_by_code(
-    participant_code: str,
+def get_user_by_auth_hash(
+    auth_subject_hash: str,
 ) -> dict[str, Any] | None:
-    """Find a participant using their anonymous code."""
-
-    clean_code = (
-        participant_code
-        .strip()
-        .upper()
-    )
 
     connection = connect_db()
     cursor = connection.cursor()
@@ -375,15 +469,17 @@ def get_user_by_code(
         """
         SELECT
             id,
-            participant_code,
-            nickname,
             name,
+            nickname,
             age,
+            participant_code,
+            auth_subject_hash,
             created_at
         FROM users
-        WHERE UPPER(participant_code) = ?
+        WHERE auth_subject_hash = ?
+        LIMIT 1
         """,
-        (clean_code,),
+        (auth_subject_hash,),
     )
 
     row = cursor.fetchone()
@@ -397,7 +493,88 @@ def get_user_by_code(
 
 
 # ============================================================
-# Check-ins
+# Check-in retrieval
+# ============================================================
+
+def get_checkin_for_date(
+    user_id: int,
+    checkin_date: str,
+) -> dict[str, Any] | None:
+
+    connection = connect_db()
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        SELECT *
+        FROM checkins
+        WHERE user_id = ?
+          AND checkin_date = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (
+            user_id,
+            checkin_date,
+        ),
+    )
+
+    row = cursor.fetchone()
+
+    connection.close()
+
+    if row is None:
+        return None
+
+    return dict(row)
+
+
+def get_checkin_by_id(
+    checkin_id: int,
+    user_id: int | None = None,
+) -> dict[str, Any] | None:
+
+    connection = connect_db()
+    cursor = connection.cursor()
+
+    if user_id is None:
+
+        cursor.execute(
+            """
+            SELECT *
+            FROM checkins
+            WHERE id = ?
+            """,
+            (checkin_id,),
+        )
+
+    else:
+
+        cursor.execute(
+            """
+            SELECT *
+            FROM checkins
+            WHERE id = ?
+              AND user_id = ?
+            """,
+            (
+                checkin_id,
+                user_id,
+            ),
+        )
+
+    row = cursor.fetchone()
+
+    connection.close()
+
+    if row is None:
+        return None
+
+    return dict(row)
+
+
+# ============================================================
+# Save daily check-in
 # ============================================================
 
 def save_checkin(
@@ -410,11 +587,35 @@ def save_checkin(
     activity: str,
     social: str,
     hour: int,
+    checkin_date: str,
 ) -> int:
-    """Save a participant check-in."""
 
     connection = connect_db()
     cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        SELECT id
+        FROM checkins
+        WHERE user_id = ?
+          AND checkin_date = ?
+        LIMIT 1
+        """,
+        (
+            user_id,
+            checkin_date,
+        ),
+    )
+
+    existing = cursor.fetchone()
+
+    if existing is not None:
+
+        connection.close()
+
+        raise DuplicateCheckinError(
+            "A check-in already exists for this date."
+        )
 
     cursor.execute(
         """
@@ -427,9 +628,10 @@ def save_checkin(
             screen_time,
             activity,
             social,
-            hour
+            hour,
+            checkin_date
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             user_id,
@@ -441,6 +643,7 @@ def save_checkin(
             activity,
             social,
             hour,
+            checkin_date,
         ),
     )
 
@@ -452,11 +655,145 @@ def save_checkin(
     return int(checkin_id)
 
 
+# ============================================================
+# Edit check-in
+# ============================================================
+
+def update_checkin(
+    checkin_id: int,
+    user_id: int,
+    sleep: float,
+    stress: int,
+    mood: int,
+    energy: int,
+    screen_time: float,
+    activity: str,
+    social: str,
+    hour: int,
+) -> bool:
+
+    connection = connect_db()
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        UPDATE checkins
+        SET
+            sleep = ?,
+            stress = ?,
+            mood = ?,
+            energy = ?,
+            screen_time = ?,
+            activity = ?,
+            social = ?,
+            hour = ?
+        WHERE id = ?
+          AND user_id = ?
+        """,
+        (
+            sleep,
+            stress,
+            mood,
+            energy,
+            screen_time,
+            activity,
+            social,
+            hour,
+            checkin_id,
+            user_id,
+        ),
+    )
+
+    updated = (
+        cursor.rowcount > 0
+    )
+
+    connection.commit()
+    connection.close()
+
+    return updated
+
+
+# ============================================================
+# Delete check-in
+# ============================================================
+
+def delete_checkin(
+    checkin_id: int,
+    user_id: int,
+) -> bool:
+
+    connection = connect_db()
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        SELECT id
+        FROM checkins
+        WHERE id = ?
+          AND user_id = ?
+        """,
+        (
+            checkin_id,
+            user_id,
+        ),
+    )
+
+    if cursor.fetchone() is None:
+
+        connection.close()
+        return False
+
+    cursor.execute(
+        """
+        DELETE FROM feedback
+        WHERE prediction_id IN (
+            SELECT id
+            FROM predictions
+            WHERE checkin_id = ?
+        )
+        """,
+        (checkin_id,),
+    )
+
+    cursor.execute(
+        """
+        DELETE FROM predictions
+        WHERE checkin_id = ?
+        """,
+        (checkin_id,),
+    )
+
+    cursor.execute(
+        """
+        DELETE FROM checkins
+        WHERE id = ?
+          AND user_id = ?
+        """,
+        (
+            checkin_id,
+            user_id,
+        ),
+    )
+
+    deleted = (
+        cursor.rowcount > 0
+    )
+
+    connection.commit()
+    connection.close()
+
+    return deleted
+
+
+# ============================================================
+# Check-in history
+# ============================================================
+
 def get_recent_checkins(
     user_id: int,
     limit: int = 30,
-) -> list[dict[str, Any]]:
-    """Return recent check-ins for one participant."""
+):
 
     connection = connect_db()
     cursor = connection.cursor()
@@ -474,10 +811,13 @@ def get_recent_checkins(
             activity,
             social,
             hour,
+            checkin_date,
             created_at
         FROM checkins
         WHERE user_id = ?
-        ORDER BY created_at DESC
+        ORDER BY
+            checkin_date DESC,
+            created_at DESC
         LIMIT ?
         """,
         (
@@ -505,7 +845,6 @@ def save_prediction(
     nudge: str,
     confidence: float,
 ) -> int:
-    """Save one AI recommendation."""
 
     connection = connect_db()
     cursor = connection.cursor()
@@ -534,11 +873,63 @@ def save_prediction(
     return int(prediction_id)
 
 
+def replace_prediction(
+    checkin_id: int,
+    nudge: str,
+    confidence: float,
+) -> int:
+
+    connection = connect_db()
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        DELETE FROM feedback
+        WHERE prediction_id IN (
+            SELECT id
+            FROM predictions
+            WHERE checkin_id = ?
+        )
+        """,
+        (checkin_id,),
+    )
+
+    cursor.execute(
+        """
+        DELETE FROM predictions
+        WHERE checkin_id = ?
+        """,
+        (checkin_id,),
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO predictions (
+            checkin_id,
+            predicted_nudge,
+            confidence
+        )
+        VALUES (?, ?, ?)
+        """,
+        (
+            checkin_id,
+            nudge,
+            confidence,
+        ),
+    )
+
+    prediction_id = cursor.lastrowid
+
+    connection.commit()
+    connection.close()
+
+    return int(prediction_id)
+
+
 def get_recent_predictions(
     user_id: int,
     limit: int = 30,
-) -> list[dict[str, Any]]:
-    """Return predictions associated with one participant."""
+):
 
     connection = connect_db()
     cursor = connection.cursor()
@@ -580,34 +971,78 @@ def get_recent_predictions(
 
 def get_latest_prediction(
     user_id: int,
-) -> dict[str, Any] | None:
-    """Return the most recent AI prediction."""
+):
 
-    predictions = get_recent_predictions(
+    rows = get_recent_predictions(
         user_id=user_id,
         limit=1,
     )
 
-    if not predictions:
+    if not rows:
         return None
 
-    return predictions[0]
+    return rows[0]
 
 
 # ============================================================
-# Feedback
+# Recommendation feedback
 # ============================================================
+
+def get_feedback_for_prediction(
+    prediction_id: int,
+) -> dict[str, Any] | None:
+
+    connection = connect_db()
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        SELECT
+            id,
+            prediction_id,
+            accepted,
+            completed,
+            rating,
+            makes_sense,
+            comment,
+            created_at
+        FROM feedback
+        WHERE prediction_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (prediction_id,),
+    )
+
+    row = cursor.fetchone()
+
+    connection.close()
+
+    if row is None:
+        return None
+
+    return dict(row)
+
 
 def save_feedback(
     prediction_id: int,
     accepted: int,
     completed: int,
     rating: int,
+    makes_sense: int | None = None,
+    comment: str | None = None,
 ) -> None:
-    """Save recommendation feedback."""
 
     connection = connect_db()
     cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        DELETE FROM feedback
+        WHERE prediction_id = ?
+        """,
+        (prediction_id,),
+    )
 
     cursor.execute(
         """
@@ -615,15 +1050,66 @@ def save_feedback(
             prediction_id,
             accepted,
             completed,
-            rating
+            rating,
+            makes_sense,
+            comment
         )
-        VALUES (?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
         (
             prediction_id,
             accepted,
             completed,
             rating,
+            makes_sense,
+            comment,
+        ),
+    )
+
+    connection.commit()
+    connection.close()
+
+
+# ============================================================
+# Usability feedback
+# ============================================================
+
+def save_usability_feedback(
+    user_id: int,
+    ease_of_use: int,
+    interface_clarity: int,
+    trust: int,
+    confusing: str | None,
+    improvement: str | None,
+) -> None:
+    """
+    Save feedback about the NudgeWise product experience.
+
+    This is deliberately separate from recommendation feedback.
+    """
+
+    connection = connect_db()
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO usability_feedback (
+            user_id,
+            ease_of_use,
+            interface_clarity,
+            trust,
+            confusing,
+            improvement
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            user_id,
+            ease_of_use,
+            interface_clarity,
+            trust,
+            confusing,
+            improvement,
         ),
     )
 
