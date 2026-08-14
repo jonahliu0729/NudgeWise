@@ -1,0 +1,62 @@
+{
+  "version": "NudgeWise AI v2.6",
+  "learning_problem": "evidence-grounded soft-label probability regression",
+  "dataset_type": "synthetic behavioural scenarios",
+  "rows": 20000,
+  "training_rows": 16000,
+  "holdout_rows": 4000,
+  "features": [
+    "sleep",
+    "stress",
+    "mood",
+    "energy",
+    "screen_time",
+    "activity_minutes",
+    "connectedness",
+    "hour",
+    "activity",
+    "day_type"
+  ],
+  "numeric_features": [
+    "sleep",
+    "stress",
+    "mood",
+    "energy",
+    "screen_time",
+    "activity_minutes",
+    "connectedness",
+    "hour"
+  ],
+  "categorical_features": [
+    "activity",
+    "day_type"
+  ],
+  "classes": [
+    "Connect socially",
+    "Maintain habits",
+    "Prepare for bed",
+    "Reduce screen time",
+    "Stay active",
+    "Take a short break"
+  ],
+  "selected_model": "MLP",
+  "generator_mean_max_probability": 0.3606225056906121,
+  "holdout_metrics": {
+    "brier_score": 7.553294856130567e-05,
+    "probability_mae": 0.002524816890174422,
+    "js_divergence": 7.051302268525314e-05,
+    "top1_agreement": 0.98475,
+    "top2_coverage": 0.99975,
+    "sampled_label_accuracy": 0.36525
+  },
+  "per_class_probability_mae": {
+    "Connect socially": 0.002473449145445564,
+    "Maintain habits": 0.003523172406196643,
+    "Prepare for bed": 0.0025389581157342733,
+    "Reduce screen time": 0.0019787377327888118,
+    "Stay active": 0.0021039572892792417,
+    "Take a short break": 0.0025306266516020005
+  },
+  "random_state": 42,
+  "interpretation": "Synthetic performance measures reconstruction of the evidence-grounded synthetic decision structure and does not establish real-world intervention effectiveness."
+}

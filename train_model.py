@@ -1,48 +1,53 @@
 """
 train_model.py
 
-NudgeWise AI v2.5
-Soft-label probability learning.
+NudgeWise AI v2.6
+Evidence-grounded soft-label probability learning.
 
-RESEARCH IDEA
--------------
-Previous versions trained a multiclass classifier against
-"best_nudge", which is a RANDOM SAMPLE from the evidence-informed
-synthetic intervention probability distribution.
+PURPOSE
+-------
+Train an AI model to reconstruct the probability distribution
+produced by the NudgeWise v2.6 evidence-grounded synthetic
+behavioural generator.
 
-That creates an artificial hard-label accuracy ceiling.
+The model learns:
 
-v2.5 instead learns the COMPLETE probability distribution:
-
-    behavioural state
+    behavioural measurements
         ->
-    six latent intervention probabilities
-        ->
-    learned probability model
+    six intervention probabilities
 
-The sampled best_nudge label is retained only as a secondary
-diagnostic.
+rather than learning a single randomly sampled hard label.
+
+IMPORTANT
+---------
+Synthetic performance measures how accurately the machine-learning
+model reconstructs the synthetic decision structure.
+
+It does NOT demonstrate:
+- clinical validity
+- intervention effectiveness
+- improved adolescent wellbeing
+- causal relationships
 
 PRIMARY EVALUATION
 ------------------
 1. Multiclass Brier score
 2. Mean absolute probability error
 3. Jensen-Shannon divergence
-4. Top-1 agreement with generator's most likely intervention
+4. Top-1 agreement with generator mode
 5. Top-2 coverage
-6. Per-nudge probability error
+6. Per-intervention probability MAE
 
-IMPORTANT
----------
-Performance on this synthetic task measures how well the AI
-recovers the synthetic evidence-informed decision structure.
-
-It does NOT demonstrate real-world intervention effectiveness.
+SECONDARY EVALUATION
+--------------------
+Agreement with the randomly sampled best_nudge label is retained
+for diagnostic purposes only.
 """
 
 from __future__ import annotations
 
 import json
+
 from pathlib import Path
 
 import joblib
@@ -89,17 +94,21 @@ from sklearn.preprocessing import (
 
 RANDOM_STATE = 42
 
+
 TRAINING_PATH = Path(
     "data/training.csv"
 )
+
 
 PROBABILITY_PATH = Path(
     "data/generator_probabilities.csv"
 )
 
+
 MODEL_PATH = Path(
     "models/nudge_model.pkl"
 )
+
 
 RESULTS_FOLDER = Path(
     "results"
@@ -107,7 +116,7 @@ RESULTS_FOLDER = Path(
 
 
 # ============================================================
-# Exact production feature schema
+# v2.6 production feature schema
 # ============================================================
 
 NUMERIC_FEATURES = [
@@ -116,14 +125,17 @@ NUMERIC_FEATURES = [
     "mood",
     "energy",
     "screen_time",
+    "activity_minutes",
+    "connectedness",
     "hour",
 ]
 
+
 CATEGORICAL_FEATURES = [
     "activity",
-    "social",
     "day_type",
 ]
+
 
 ALL_FEATURES = (
     NUMERIC_FEATURES
@@ -144,6 +156,7 @@ CLASSES = [
     "Take a short break",
 ]
 
+
 PROBABILITY_COLUMNS = [
     "p_connect_socially",
     "p_maintain_habits",
@@ -155,23 +168,24 @@ PROBABILITY_COLUMNS = [
 
 
 # ============================================================
-# Probability helpers
+# Probability normalisation
 # ============================================================
 
 def normalise_probabilities(
     values: np.ndarray,
 ) -> np.ndarray:
     """
-    Convert arbitrary multi-output regression predictions into
-    valid probability distributions.
+    Convert model regression outputs into valid probability
+    distributions.
 
-    Regression models may predict slightly negative values or
-    values that do not sum exactly to one.
+    Multi-output regression models can predict:
+    - slightly negative values
+    - rows that do not sum exactly to 1
 
-    We:
-        1. clip negatives
-        2. add epsilon
-        3. normalise each row to sum to one
+    We therefore:
+    1. clip negatives
+    2. add a tiny epsilon
+    3. normalise each row
     """
 
     values = np.asarray(
@@ -179,18 +193,30 @@ def normalise_probabilities(
         dtype=float,
     )
 
+
+    if values.ndim == 1:
+
+        values = values.reshape(
+            1,
+            -1,
+        )
+
+
     values = np.clip(
         values,
         0.0,
         None,
     )
 
+
     values += 1e-9
+
 
     row_sums = values.sum(
         axis=1,
         keepdims=True,
     )
+
 
     return (
         values
@@ -211,11 +237,12 @@ def jensen_shannon_divergence(
 
     Lower is better.
 
-    JS divergence is symmetric and numerically safer for this
-    probability-comparison task than using raw KL divergence alone.
+    JS divergence compares entire probability distributions and
+    is symmetric and bounded compared with raw KL divergence.
     """
 
     epsilon = 1e-12
+
 
     p = np.clip(
         true_probabilities,
@@ -223,15 +250,18 @@ def jensen_shannon_divergence(
         1.0,
     )
 
+
     q = np.clip(
         predicted_probabilities,
         epsilon,
         1.0,
     )
 
+
     midpoint = (
         p + q
     ) / 2.0
+
 
     kl_p = np.sum(
         p
@@ -241,6 +271,7 @@ def jensen_shannon_divergence(
         axis=1,
     )
 
+
     kl_q = np.sum(
         q
         * np.log(
@@ -249,18 +280,25 @@ def jensen_shannon_divergence(
         axis=1,
     )
 
+
     js = (
-        0.5 * kl_p
-        + 0.5 * kl_q
+        0.5
+        * kl_p
+
+        + 0.5
+        * kl_q
     )
 
+
     return float(
-        np.mean(js)
+        np.mean(
+            js
+        )
     )
 
 
 # ============================================================
-# Evaluation metrics
+# Probability evaluation
 # ============================================================
 
 def evaluate_probabilities(
@@ -268,19 +306,20 @@ def evaluate_probabilities(
     predicted_probabilities: np.ndarray,
 ) -> dict:
     """
-    Evaluate how closely the model reconstructs the generator's
-    underlying probability distribution.
+    Evaluate reconstruction of the generator's latent
+    intervention probability distribution.
     """
-
-    predicted_probabilities = (
-        normalise_probabilities(
-            predicted_probabilities
-        )
-    )
 
     true_probabilities = (
         normalise_probabilities(
             true_probabilities
+        )
+    )
+
+
+    predicted_probabilities = (
+        normalise_probabilities(
+            predicted_probabilities
         )
     )
 
@@ -330,13 +369,14 @@ def evaluate_probabilities(
 
 
     # --------------------------------------------------------
-    # Generator's actual most-likely intervention
+    # Generator mode vs model mode
     # --------------------------------------------------------
 
     true_top1 = np.argmax(
         true_probabilities,
         axis=1,
     )
+
 
     predicted_top1 = np.argmax(
         predicted_probabilities,
@@ -355,8 +395,8 @@ def evaluate_probabilities(
     # --------------------------------------------------------
     # Top-2 coverage
     #
-    # Is the generator's best intervention among the model's
-    # two strongest suggestions?
+    # Is the generator's strongest intervention among the
+    # model's two strongest interventions?
     # --------------------------------------------------------
 
     predicted_top2 = np.argsort(
@@ -365,21 +405,24 @@ def evaluate_probabilities(
     )[:, -2:]
 
 
+    top2_hits = [
+        true_class
+        in predicted_classes
+
+        for (
+            true_class,
+            predicted_classes,
+        )
+        in zip(
+            true_top1,
+            predicted_top2,
+        )
+    ]
+
+
     top2_coverage = float(
         np.mean(
-            [
-                true_class
-                in predicted_classes
-
-                for (
-                    true_class,
-                    predicted_classes,
-                )
-                in zip(
-                    true_top1,
-                    predicted_top2,
-                )
-            ]
+            top2_hits
         )
     )
 
@@ -407,6 +450,9 @@ def evaluate_probabilities(
 # ============================================================
 
 def load_data():
+    """
+    Load and validate the exact v2.6 production schema.
+    """
 
     if not TRAINING_PATH.exists():
 
@@ -428,18 +474,18 @@ def load_data():
         TRAINING_PATH
     )
 
+
     probabilities = pd.read_csv(
         PROBABILITY_PATH
     )
 
 
     # --------------------------------------------------------
-    # Row alignment check
+    # Alignment validation
     # --------------------------------------------------------
 
-    if (
-        len(training)
-        != len(probabilities)
+    if len(training) != len(
+        probabilities
     ):
 
         raise ValueError(
@@ -449,12 +495,15 @@ def load_data():
 
 
     # --------------------------------------------------------
-    # Feature schema validation
+    # Feature validation
     # --------------------------------------------------------
 
     missing_features = [
         feature
-        for feature in ALL_FEATURES
+
+        for feature
+        in ALL_FEATURES
+
         if feature
         not in training.columns
     ]
@@ -463,16 +512,34 @@ def load_data():
     if missing_features:
 
         raise ValueError(
-            "Missing production features: "
+            "Missing v2.6 production features: "
             + ", ".join(
                 missing_features
             )
         )
 
 
+    # Legacy social must NOT accidentally remain in the AI
+    # feature schema.
+
+    if "social" in ALL_FEATURES:
+
+        raise ValueError(
+            "Legacy social variable must not be used "
+            "by the v2.6 model."
+        )
+
+
+    # --------------------------------------------------------
+    # Probability validation
+    # --------------------------------------------------------
+
     missing_probability_columns = [
         column
-        for column in PROBABILITY_COLUMNS
+
+        for column
+        in PROBABILITY_COLUMNS
+
         if column
         not in probabilities.columns
     ]
@@ -493,26 +560,40 @@ def load_data():
     ].copy()
 
 
-    y_soft = probabilities[
-        PROBABILITY_COLUMNS
-    ].to_numpy(
-        dtype=float
+    y_soft = (
+        probabilities[
+            PROBABILITY_COLUMNS
+        ]
+        .to_numpy(
+            dtype=float
+        )
     )
 
 
-    y_soft = normalise_probabilities(
-        y_soft
+    y_soft = (
+        normalise_probabilities(
+            y_soft
+        )
     )
 
 
-    # Generator mode is used ONLY for stratification
-    # and top-1 evaluation.
+    # --------------------------------------------------------
+    # Generator mode
+    #
+    # Used for stratification and top-1 evaluation.
+    # --------------------------------------------------------
 
     y_mode = np.argmax(
         y_soft,
         axis=1,
     )
 
+
+    # --------------------------------------------------------
+    # Sampled synthetic label
+    #
+    # Secondary diagnostic only.
+    # --------------------------------------------------------
 
     sampled_labels = training[
         "best_nudge"
@@ -528,10 +609,19 @@ def load_data():
 
 
 # ============================================================
-# Preprocessor
+# Preprocessing
 # ============================================================
 
 def build_preprocessor():
+    """
+    Exact preprocessing used in production.
+
+    Numeric:
+        standardised
+
+    Categorical:
+        one-hot encoded
+    """
 
     return ColumnTransformer(
         transformers=[
@@ -555,15 +645,14 @@ def build_preprocessor():
 
 
 # ============================================================
-# Candidate probability models
+# Candidate models
 # ============================================================
 
 def build_models():
     """
-    Candidate multi-output regression models.
+    Candidate soft-probability regression models.
 
-    The targets are six continuous probabilities rather than
-    six hard classes.
+    All models predict six continuous outputs.
     """
 
     return {
@@ -579,29 +668,37 @@ def build_models():
 
 
         # ----------------------------------------------------
-        # Nonlinear ensemble
+        # Random Forest
         # ----------------------------------------------------
 
         "Random Forest":
             RandomForestRegressor(
                 n_estimators=500,
+
                 min_samples_leaf=3,
+
                 max_features=0.80,
+
                 random_state=RANDOM_STATE,
+
                 n_jobs=-1,
             ),
 
 
         # ----------------------------------------------------
-        # Highly randomised ensemble
+        # Extra Trees
         # ----------------------------------------------------
 
         "Extra Trees":
             ExtraTreesRegressor(
                 n_estimators=500,
+
                 min_samples_leaf=3,
+
                 max_features=0.85,
+
                 random_state=RANDOM_STATE,
+
                 n_jobs=-1,
             ),
 
@@ -679,6 +776,13 @@ def per_class_mae(
     )
 
 
+    true_probabilities = (
+        normalise_probabilities(
+            true_probabilities
+        )
+    )
+
+
     errors = np.mean(
         np.abs(
             true_probabilities
@@ -690,7 +794,9 @@ def per_class_mae(
 
     return {
         class_name:
-            float(error)
+            float(
+                error
+            )
 
         for (
             class_name,
@@ -713,11 +819,19 @@ def cross_validate_models(
     y_train,
     mode_train,
 ):
+    """
+    Compare candidate learners using the training partition only.
 
-    cross_validator = StratifiedKFold(
-        n_splits=5,
-        shuffle=True,
-        random_state=RANDOM_STATE,
+    The independent holdout is not touched during model
+    selection.
+    """
+
+    cross_validator = (
+        StratifiedKFold(
+            n_splits=5,
+            shuffle=True,
+            random_state=RANDOM_STATE,
+        )
     )
 
 
@@ -725,11 +839,14 @@ def cross_validate_models(
 
 
     print()
-    print("=" * 76)
+    print("=" * 78)
     print(
-        "NUDGEWISE V2.5 SOFT-LABEL CROSS VALIDATION"
+        "NUDGEWISE V2.6"
     )
-    print("=" * 76)
+    print(
+        "SOFT-LABEL CROSS-VALIDATION"
+    )
+    print("=" * 78)
 
 
     for (
@@ -737,13 +854,13 @@ def cross_validate_models(
         estimator,
     ) in models.items():
 
-        fold_metrics = []
-
-
         print()
         print(
             f"Testing: {model_name}"
         )
+
+
+        fold_metrics = []
 
 
         for (
@@ -766,6 +883,7 @@ def cross_validate_models(
                 ]
             )
 
+
             X_fold_validation = (
                 X_train.iloc[
                     validation_indices
@@ -778,6 +896,7 @@ def cross_validate_models(
                     train_indices
                 ]
             )
+
 
             y_fold_validation = (
                 y_train[
@@ -817,14 +936,21 @@ def cross_validate_models(
 
             print(
                 f"  Fold {fold}: "
-                f"Top1={metrics['top1_agreement']:.3f}  "
-                f"Brier={metrics['brier_score']:.4f}  "
-                f"JS={metrics['js_divergence']:.4f}"
+                f"Top1="
+                f"{metrics['top1_agreement']:.3f}  "
+                f"Top2="
+                f"{metrics['top2_coverage']:.3f}  "
+                f"Brier="
+                f"{metrics['brier_score']:.4f}  "
+                f"MAE="
+                f"{metrics['probability_mae']:.4f}  "
+                f"JS="
+                f"{metrics['js_divergence']:.4f}"
             )
 
 
         # ----------------------------------------------------
-        # Average folds
+        # Mean CV performance
         # ----------------------------------------------------
 
         average_metrics = {
@@ -833,10 +959,11 @@ def cross_validate_models(
                 float(
                     np.mean(
                         [
-                            fold[
+                            fold_result[
                                 key
                             ]
-                            for fold
+
+                            for fold_result
                             in fold_metrics
                         ]
                     )
@@ -848,12 +975,13 @@ def cross_validate_models(
 
 
         # ----------------------------------------------------
-        # Selection score
+        # Model-selection score
         #
-        # Higher = better.
+        # This combines:
+        # decision recovery + probability reconstruction.
         #
-        # Top-1 and top-2 capture decision recovery.
-        # Brier and JS capture probability quality.
+        # It is a model-selection heuristic, not a scientific
+        # outcome metric.
         # ----------------------------------------------------
 
         selection_score = (
@@ -928,7 +1056,7 @@ def cross_validate_models(
         )
 
 
-    return (
+    comparison = (
         pd.DataFrame(
             results
         )
@@ -942,8 +1070,11 @@ def cross_validate_models(
     )
 
 
+    return comparison
+
+
 # ============================================================
-# Independent holdout evaluation
+# Holdout evaluation
 # ============================================================
 
 def evaluate_holdout(
@@ -952,6 +1083,9 @@ def evaluate_holdout(
     y_test,
     sampled_test,
 ):
+    """
+    Evaluate final selected model on the untouched 20% holdout.
+    """
 
     predicted = model.predict(
         X_test
@@ -971,17 +1105,14 @@ def evaluate_holdout(
     )
 
 
-    probability_errors = (
-        per_class_mae(
-            y_test,
-            predicted,
-        )
+    class_errors = per_class_mae(
+        y_test,
+        predicted,
     )
 
 
     # --------------------------------------------------------
-    # Secondary metric:
-    # agreement with RANDOMLY SAMPLED synthetic label.
+    # Secondary sampled-label agreement
     # --------------------------------------------------------
 
     predicted_indices = np.argmax(
@@ -993,6 +1124,7 @@ def evaluate_holdout(
     predicted_labels = np.array(
         [
             CLASSES[index]
+
             for index
             in predicted_indices
         ]
@@ -1014,8 +1146,84 @@ def evaluate_holdout(
 
     return (
         metrics,
-        probability_errors,
+        class_errors,
         predicted,
+    )
+
+
+# ============================================================
+# Holdout class distribution
+# ============================================================
+
+def holdout_mode_distribution(
+    true_probabilities,
+    predicted_probabilities,
+):
+    """
+    Compare generator-mode and model-mode distributions on the
+    untouched holdout set.
+    """
+
+    true_indices = np.argmax(
+        true_probabilities,
+        axis=1,
+    )
+
+
+    predicted_indices = np.argmax(
+        predicted_probabilities,
+        axis=1,
+    )
+
+
+    records = []
+
+
+    for (
+        index,
+        class_name,
+    ) in enumerate(
+        CLASSES
+    ):
+
+        true_rate = float(
+            np.mean(
+                true_indices
+                == index
+            )
+        )
+
+
+        predicted_rate = float(
+            np.mean(
+                predicted_indices
+                == index
+            )
+        )
+
+
+        records.append(
+            {
+                "class":
+                    class_name,
+
+                "generator_mode_rate":
+                    true_rate,
+
+                "model_mode_rate":
+                    predicted_rate,
+
+                "absolute_difference":
+                    abs(
+                        true_rate
+                        - predicted_rate
+                    ),
+            }
+        )
+
+
+    return pd.DataFrame(
+        records
     )
 
 
@@ -1040,38 +1248,48 @@ def main():
 
 
     print()
-    print("=" * 76)
+    print("=" * 78)
     print(
-        "NUDGEWISE AI V2.5"
+        "NUDGEWISE AI V2.6"
     )
     print(
-        "SOFT-LABEL PROBABILITY LEARNING"
+        "EVIDENCE-GROUNDED SOFT-PROBABILITY LEARNING"
     )
-    print("=" * 76)
+    print("=" * 78)
 
 
     print()
     print(
-        f"Rows:     "
-        f"{len(X):,}"
+        f"Rows:     {len(X):,}"
     )
 
     print(
-        f"Features: "
-        f"{len(ALL_FEATURES)}"
+        f"Features: {len(ALL_FEATURES)}"
     )
 
     print(
-        f"Outputs:  "
-        f"{len(CLASSES)} probabilities"
+        f"Outputs:  {len(CLASSES)} probabilities"
     )
 
 
+    print()
+    print(
+        "Production features:"
+    )
+
+
+    for feature in ALL_FEATURES:
+
+        print(
+            f"  - {feature}"
+        )
+
+
     # --------------------------------------------------------
-    # Generator theoretical ambiguity
+    # Generator ambiguity
     # --------------------------------------------------------
 
-    generator_mode_confidence = float(
+    generator_mean_max_probability = float(
         np.mean(
             np.max(
                 y_soft,
@@ -1087,21 +1305,24 @@ def main():
     )
 
     print(
-        f"  {generator_mode_confidence:.3f}"
+        f"  "
+        f"{generator_mean_max_probability:.3f}"
     )
 
 
     print()
     print(
-        "This is the expected hard-label accuracy of an "
-        "oracle that always chooses the generator's most "
-        "likely intervention against its randomly sampled label."
+        "This describes synthetic decision ambiguity."
+    )
+
+    print(
+        "It is NOT intervention effectiveness."
     )
 
 
-    # --------------------------------------------------------
-    # Independent holdout split
-    # --------------------------------------------------------
+    # ========================================================
+    # Independent 80 / 20 split
+    # ========================================================
 
     indices = np.arange(
         len(X)
@@ -1119,31 +1340,45 @@ def main():
     )
 
 
-    X_train = X.iloc[
-        train_indices
-    ].reset_index(
-        drop=True
-    )
-
-    X_test = X.iloc[
-        test_indices
-    ].reset_index(
-        drop=True
+    X_train = (
+        X.iloc[
+            train_indices
+        ]
+        .reset_index(
+            drop=True
+        )
     )
 
 
-    y_train = y_soft[
-        train_indices
-    ]
+    X_test = (
+        X.iloc[
+            test_indices
+        ]
+        .reset_index(
+            drop=True
+        )
+    )
 
-    y_test = y_soft[
-        test_indices
-    ]
+
+    y_train = (
+        y_soft[
+            train_indices
+        ]
+    )
 
 
-    mode_train = y_mode[
-        train_indices
-    ]
+    y_test = (
+        y_soft[
+            test_indices
+        ]
+    )
+
+
+    mode_train = (
+        y_mode[
+            train_indices
+        ]
+    )
 
 
     sampled_test = (
@@ -1156,27 +1391,39 @@ def main():
     )
 
 
-    # --------------------------------------------------------
-    # Compare candidate models
-    # --------------------------------------------------------
+    print()
+    print(
+        f"Training partition: "
+        f"{len(X_train):,}"
+    )
+
+    print(
+        f"Untouched holdout:  "
+        f"{len(X_test):,}"
+    )
+
+
+    # ========================================================
+    # Candidate comparison
+    # ========================================================
 
     models = build_models()
 
 
     comparison = cross_validate_models(
-        models,
-        X_train,
-        y_train,
-        mode_train,
+        models=models,
+        X_train=X_train,
+        y_train=y_train,
+        mode_train=mode_train,
     )
 
 
     print()
-    print("=" * 76)
+    print("=" * 78)
     print(
         "MODEL RANKING"
     )
-    print("=" * 76)
+    print("=" * 78)
 
 
     print(
@@ -1188,12 +1435,16 @@ def main():
 
     comparison.to_csv(
         RESULTS_FOLDER
-        / "v25_soft_model_comparison.csv",
+        / "v26_soft_model_comparison.csv",
         index=False,
     )
 
 
-    best_name = (
+    # ========================================================
+    # Select model using CV only
+    # ========================================================
+
+    best_name = str(
         comparison.iloc[0][
             "model"
         ]
@@ -1207,14 +1458,16 @@ def main():
     )
 
 
-    # --------------------------------------------------------
-    # Train final model
-    # --------------------------------------------------------
+    # ========================================================
+    # Fit selected model on full 80% training partition
+    # ========================================================
 
     final_model = make_pipeline(
-        models[
-            best_name
-        ]
+        clone(
+            models[
+                best_name
+            ]
+        )
     )
 
 
@@ -1224,59 +1477,59 @@ def main():
     )
 
 
-    # --------------------------------------------------------
-    # Independent holdout
-    # --------------------------------------------------------
+    # ========================================================
+    # ONE independent holdout evaluation
+    # ========================================================
 
     (
         holdout_metrics,
         class_errors,
         holdout_predictions,
     ) = evaluate_holdout(
-        final_model,
-        X_test,
-        y_test,
-        sampled_test,
+        model=final_model,
+        X_test=X_test,
+        y_test=y_test,
+        sampled_test=sampled_test,
     )
 
 
     print()
-    print("=" * 76)
+    print("=" * 78)
     print(
-        "INDEPENDENT SOFT-LABEL HOLDOUT TEST"
+        "INDEPENDENT V2.6 HOLDOUT TEST"
     )
-    print("=" * 76)
+    print("=" * 78)
 
 
     print(
-        f"Top-1 agreement with generator mode: "
+        f"Top-1 generator agreement: "
         f"{holdout_metrics['top1_agreement']:.3f}"
     )
 
     print(
-        f"Top-2 coverage:                       "
+        f"Top-2 coverage:             "
         f"{holdout_metrics['top2_coverage']:.3f}"
     )
 
     print(
-        f"Multiclass Brier score:               "
+        f"Multiclass Brier score:     "
         f"{holdout_metrics['brier_score']:.4f}"
     )
 
     print(
-        f"Probability MAE:                      "
+        f"Probability MAE:            "
         f"{holdout_metrics['probability_mae']:.4f}"
     )
 
     print(
-        f"Jensen-Shannon divergence:            "
+        f"Jensen-Shannon divergence:  "
         f"{holdout_metrics['js_divergence']:.4f}"
     )
 
 
     print()
     print(
-        "Secondary sampled-label accuracy:"
+        "Secondary sampled-label agreement:"
     )
 
     print(
@@ -1285,9 +1538,13 @@ def main():
     )
 
 
+    # ========================================================
+    # Per-class error
+    # ========================================================
+
     print()
     print(
-        "Per-nudge probability MAE:"
+        "PER-INTERVENTION PROBABILITY MAE"
     )
 
 
@@ -1297,69 +1554,122 @@ def main():
     ) in class_errors.items():
 
         print(
-            f"  {class_name:<24}"
+            f"{class_name:<24}"
             f"{error:.4f}"
         )
 
 
-    # --------------------------------------------------------
-    # Save holdout comparison
-    # --------------------------------------------------------
+    # ========================================================
+    # Mode-distribution reconstruction
+    # ========================================================
 
-    true_holdout_dataframe = pd.DataFrame(
+    mode_comparison = (
+        holdout_mode_distribution(
+            true_probabilities=y_test,
+            predicted_probabilities=holdout_predictions,
+        )
+    )
+
+
+    print()
+    print(
+        "HOLDOUT MODE DISTRIBUTION"
+    )
+
+
+    print(
+        mode_comparison.to_string(
+            index=False
+        )
+    )
+
+
+    mode_comparison.to_csv(
+        RESULTS_FOLDER
+        / "v26_holdout_mode_distribution.csv",
+        index=False,
+    )
+
+
+    # ========================================================
+    # Save holdout probabilities
+    # ========================================================
+
+    true_dataframe = pd.DataFrame(
         y_test,
         columns=[
             f"true_{column}"
+
             for column
             in PROBABILITY_COLUMNS
         ],
     )
 
 
-    predicted_holdout_dataframe = pd.DataFrame(
+    predicted_dataframe = pd.DataFrame(
         holdout_predictions,
         columns=[
             f"pred_{column}"
+
             for column
             in PROBABILITY_COLUMNS
         ],
     )
 
 
-    holdout_comparison = pd.concat(
+    holdout_dataframe = pd.concat(
         [
-            true_holdout_dataframe,
-            predicted_holdout_dataframe,
+            true_dataframe,
+            predicted_dataframe,
         ],
         axis=1,
     )
 
 
-    holdout_comparison.to_csv(
+    holdout_dataframe.to_csv(
         RESULTS_FOLDER
-        / "v25_holdout_probabilities.csv",
+        / "v26_holdout_probabilities.csv",
         index=False,
     )
 
 
-    # --------------------------------------------------------
-    # Save experiment summary
-    # --------------------------------------------------------
+    # ========================================================
+    # Experiment summary
+    # ========================================================
 
     summary = {
         "version":
-            "NudgeWise AI v2.5",
+            "NudgeWise AI v2.6",
 
         "learning_problem":
-            "soft-label probability regression",
+            "evidence-grounded soft-label probability regression",
+
+        "dataset_type":
+            "synthetic behavioural scenarios",
 
         "rows":
             int(
                 len(X)
             ),
 
+        "training_rows":
+            int(
+                len(X_train)
+            ),
+
+        "holdout_rows":
+            int(
+                len(X_test)
+            ),
+
         "features":
             ALL_FEATURES,
+
+        "numeric_features":
+            NUMERIC_FEATURES,
+
+        "categorical_features":
+            CATEGORICAL_FEATURES,
 
         "classes":
             CLASSES,
@@ -1368,7 +1678,7 @@ def main():
             best_name,
 
         "generator_mean_max_probability":
-            generator_mode_confidence,
+            generator_mean_max_probability,
 
         "holdout_metrics":
             holdout_metrics,
@@ -1378,12 +1688,20 @@ def main():
 
         "random_state":
             RANDOM_STATE,
+
+        "interpretation":
+            (
+                "Synthetic performance measures reconstruction "
+                "of the evidence-grounded synthetic decision "
+                "structure and does not establish real-world "
+                "intervention effectiveness."
+            ),
     }
 
 
     with open(
         RESULTS_FOLDER
-        / "v25_experiment_summary.json",
+        / "v26_experiment_summary.json",
         "w",
         encoding="utf-8",
     ) as file:
@@ -1395,9 +1713,9 @@ def main():
         )
 
 
-    # --------------------------------------------------------
-    # Save production model bundle
-    # --------------------------------------------------------
+    # ========================================================
+    # Save production bundle
+    # ========================================================
 
     MODEL_PATH.parent.mkdir(
         parents=True,
@@ -1416,7 +1734,7 @@ def main():
             "soft_probability_regression",
 
         "version":
-            "2.5",
+            "2.6",
 
         "features":
             ALL_FEATURES,
@@ -1450,54 +1768,74 @@ def main():
     )
 
 
+    # ========================================================
+    # Completion
+    # ========================================================
+
     print()
-    print("=" * 76)
+    print("=" * 78)
     print(
-        "NUDGEWISE V2.5 MODEL SAVED"
+        "NUDGEWISE AI V2.6 MODEL SAVED"
     )
-    print("=" * 76)
+    print("=" * 78)
 
 
     print(
-        f"Model: "
+        f"Selected model: "
         f"{best_name}"
     )
 
     print(
-        f"Path: "
+        f"Production bundle: "
         f"{MODEL_PATH}"
     )
 
     print(
-        f"Results: "
+        f"Research results: "
         f"{RESULTS_FOLDER}/"
     )
 
 
     print()
     print(
-        "PRIMARY interpretation:"
+        "INTERPRETATION"
     )
 
     print(
-        "The model predicts the evidence-informed latent "
-        "intervention probability distribution."
+        "The model predicts the latent intervention probability "
+        "distribution generated by the v2.6 synthetic behavioural "
+        "decision system."
     )
+
 
     print()
     print(
-        "The sampled hard label is NOT treated as perfect "
-        "ground truth."
+        "The randomly sampled best_nudge is NOT treated "
+        "as perfect ground truth."
     )
+
 
     print()
     print(
-        "Synthetic performance does NOT establish "
-        "real-world intervention effectiveness."
+        "Synthetic model performance does NOT establish "
+        "real-world effectiveness or clinical validity."
     )
 
-    print("=" * 76)
 
+    print()
+    print(
+        "Do not modify the v2.6 generator in response to this "
+        "holdout result without creating a new experimental version."
+    )
+
+
+    print("=" * 78)
+
+
+# ============================================================
+# Entry point
+# ============================================================
 
 if __name__ == "__main__":
+
     main()

@@ -4,8 +4,20 @@ predict.py
 NudgeWise AI v2.6
 Production soft-probability prediction and explainability interface.
 
-The model predicts a probability distribution across six
+The trained model predicts a probability distribution across six
 digital wellbeing interventions.
+
+Production features:
+- sleep
+- stress
+- mood
+- energy
+- screen_time
+- activity_minutes
+- connectedness
+- hour
+- activity
+- day_type
 
 This module provides:
 - primary recommendation
@@ -14,6 +26,13 @@ This module provides:
 - uncertainty measures
 - model certainty category
 - local model sensitivity explanations
+
+IMPORTANT
+---------
+Model probabilities describe the preference distribution learned from
+the v2.6 synthetic decision generator.
+
+They are NOT probabilities that an intervention will improve wellbeing.
 """
 
 from __future__ import annotations
@@ -51,50 +70,123 @@ BUNDLE = joblib.load(
     MODEL_PATH
 )
 
-MODEL = BUNDLE["model"]
+
+MODEL = BUNDLE[
+    "model"
+]
+
 
 CLASSES = list(
-    BUNDLE["classes"]
+    BUNDLE[
+        "classes"
+    ]
 )
 
+
 FEATURES = list(
-    BUNDLE["features"]
+    BUNDLE[
+        "features"
+    ]
 )
+
+
+MODEL_VERSION = str(
+    BUNDLE.get(
+        "version",
+        "unknown",
+    )
+)
+
+
+# ============================================================
+# Production schema validation
+# ============================================================
+
+EXPECTED_FEATURES = [
+    "sleep",
+    "stress",
+    "mood",
+    "energy",
+    "screen_time",
+    "activity_minutes",
+    "connectedness",
+    "hour",
+    "activity",
+    "day_type",
+]
+
+
+if FEATURES != EXPECTED_FEATURES:
+
+    raise ValueError(
+        "Loaded NudgeWise model does not match the "
+        "expected v2.6 production feature schema.\n"
+        f"Expected: {EXPECTED_FEATURES}\n"
+        f"Loaded:   {FEATURES}"
+    )
 
 
 # ============================================================
 # Feature reference values
 # ============================================================
 
-# These are neutral/reference states used only for local
-# sensitivity analysis.
+# These values are used ONLY for local sensitivity analysis.
 #
-# They are NOT clinical targets and are NOT used to override
-# the model prediction.
+# They are not clinical targets and do not override the model.
 
 REFERENCE_VALUES = {
     "sleep": 8.0,
+
     "stress": 3,
+
     "mood": 3,
+
     "energy": 3,
+
     "screen_time": 3.0,
-    "activity": "Relaxing",
-    "social": "Medium",
+
+    "activity_minutes": 60,
+
+    "connectedness": 3,
+
     "hour": 15,
+
+    "activity": "Relaxing",
+
     "day_type": "Weekday",
 }
 
 
 DISPLAY_NAMES = {
-    "sleep": "sleep",
-    "stress": "stress",
-    "mood": "mood",
-    "energy": "energy",
-    "screen_time": "recreational screen time",
-    "activity": "current activity",
-    "social": "social interaction",
-    "hour": "time of day",
-    "day_type": "day context",
+    "sleep":
+        "sleep",
+
+    "stress":
+        "stress",
+
+    "mood":
+        "mood",
+
+    "energy":
+        "energy",
+
+    "screen_time":
+        "recreational screen time",
+
+    "activity_minutes":
+        "physical activity",
+
+    "connectedness":
+        "social connectedness",
+
+    "hour":
+        "time of day",
+
+    "activity":
+        "current context",
+
+    "day_type":
+        "day context",
 }
 
 
@@ -111,6 +203,7 @@ def normalise_probabilities(
         dtype=float,
     )
 
+
     if values.ndim == 1:
 
         values = values.reshape(
@@ -118,23 +211,147 @@ def normalise_probabilities(
             -1,
         )
 
+
     values = np.clip(
         values,
         0.0,
         None,
     )
 
+
     values += 1e-12
+
 
     row_sums = values.sum(
         axis=1,
         keepdims=True,
     )
 
+
     return (
         values
         / row_sums
     )
+
+
+# ============================================================
+# Input validation
+# ============================================================
+
+def validate_input(
+    sleep,
+    stress,
+    mood,
+    energy,
+    screen_time,
+    activity_minutes,
+    connectedness,
+    activity,
+    day_type,
+    hour,
+) -> None:
+    """
+    Validate production inputs before passing them to the model.
+
+    Validation protects against malformed values but deliberately
+    avoids silently changing unusual user responses.
+    """
+
+    if not 0.0 <= float(sleep) <= 16.0:
+
+        raise ValueError(
+            "sleep must be between 0 and 16 hours."
+        )
+
+
+    if int(stress) not in range(
+        1,
+        6,
+    ):
+
+        raise ValueError(
+            "stress must be between 1 and 5."
+        )
+
+
+    if int(mood) not in range(
+        1,
+        6,
+    ):
+
+        raise ValueError(
+            "mood must be between 1 and 5."
+        )
+
+
+    if int(energy) not in range(
+        1,
+        6,
+    ):
+
+        raise ValueError(
+            "energy must be between 1 and 5."
+        )
+
+
+    if not 0.0 <= float(screen_time) <= 24.0:
+
+        raise ValueError(
+            "screen_time must be between 0 and 24 hours."
+        )
+
+
+    if not 0 <= int(activity_minutes) <= 300:
+
+        raise ValueError(
+            "activity_minutes must be between 0 and 300."
+        )
+
+
+    if int(connectedness) not in range(
+        1,
+        6,
+    ):
+
+        raise ValueError(
+            "connectedness must be between 1 and 5."
+        )
+
+
+    if not 0 <= int(hour) <= 23:
+
+        raise ValueError(
+            "hour must be between 0 and 23."
+        )
+
+
+    valid_activities = {
+        "Phone",
+        "Studying",
+        "Working",
+        "Relaxing",
+        "Exercise",
+    }
+
+
+    if activity not in valid_activities:
+
+        raise ValueError(
+            f"Unknown activity context: {activity}"
+        )
+
+
+    valid_day_types = {
+        "Weekday",
+        "Weekend",
+    }
+
+
+    if day_type not in valid_day_types:
+
+        raise ValueError(
+            f"Unknown day_type: {day_type}"
+        )
 
 
 # ============================================================
@@ -147,25 +364,61 @@ def build_input(
     mood,
     energy,
     screen_time,
+    activity_minutes,
+    connectedness,
     activity,
     day_type,
-    social,
     hour,
 ):
 
+    validate_input(
+        sleep=sleep,
+        stress=stress,
+        mood=mood,
+        energy=energy,
+        screen_time=screen_time,
+        activity_minutes=activity_minutes,
+        connectedness=connectedness,
+        activity=activity,
+        day_type=day_type,
+        hour=hour,
+    )
+
+
     dataframe = pd.DataFrame(
         {
-            "sleep": [sleep],
-            "stress": [stress],
-            "mood": [mood],
-            "energy": [energy],
-            "screen_time": [screen_time],
-            "activity": [activity],
-            "social": [social],
-            "hour": [hour],
-            "day_type": [day_type],
+            "sleep":
+                [float(sleep)],
+
+            "stress":
+                [int(stress)],
+
+            "mood":
+                [int(mood)],
+
+            "energy":
+                [int(energy)],
+
+            "screen_time":
+                [float(screen_time)],
+
+            "activity_minutes":
+                [int(activity_minutes)],
+
+            "connectedness":
+                [int(connectedness)],
+
+            "hour":
+                [int(hour)],
+
+            "activity":
+                [activity],
+
+            "day_type":
+                [day_type],
         }
     )
+
 
     return dataframe[
         FEATURES
@@ -182,9 +435,10 @@ def predict_probabilities(
     mood,
     energy,
     screen_time,
+    activity_minutes,
+    connectedness,
     activity,
     day_type,
-    social,
     hour,
 ):
 
@@ -194,15 +448,18 @@ def predict_probabilities(
         mood=mood,
         energy=energy,
         screen_time=screen_time,
+        activity_minutes=activity_minutes,
+        connectedness=connectedness,
         activity=activity,
         day_type=day_type,
-        social=social,
         hour=hour,
     )
+
 
     raw_prediction = MODEL.predict(
         user_data
     )
+
 
     probabilities = (
         normalise_probabilities(
@@ -210,9 +467,17 @@ def predict_probabilities(
         )[0]
     )
 
+
     return {
-        class_name: float(probability)
-        for class_name, probability
+        class_name:
+            float(
+                probability
+            )
+
+        for (
+            class_name,
+            probability,
+        )
         in zip(
             CLASSES,
             probabilities,
@@ -230,24 +495,36 @@ def calculate_uncertainty(
 
     ordered = sorted(
         probabilities.items(),
-        key=lambda item: item[1],
+        key=lambda item:
+            item[1],
         reverse=True,
     )
 
+
     top_probability = (
-        ordered[0][1]
+        ordered[
+            0
+        ][1]
     )
 
-    if len(ordered) >= 2:
+
+    if len(
+        ordered
+    ) >= 2:
 
         probability_margin = (
-            ordered[0][1]
-            - ordered[1][1]
+            ordered[
+                0
+            ][1]
+            - ordered[
+                1
+            ][1]
         )
 
     else:
 
         probability_margin = 1.0
+
 
     values = np.asarray(
         list(
@@ -256,14 +533,17 @@ def calculate_uncertainty(
         dtype=float,
     )
 
+
     entropy = float(
         -np.sum(
             values
             * np.log(
-                values + 1e-12
+                values
+                + 1e-12
             )
         )
     )
+
 
     maximum_entropy = float(
         np.log(
@@ -273,6 +553,7 @@ def calculate_uncertainty(
             )
         )
     )
+
 
     if maximum_entropy > 0:
 
@@ -284,6 +565,7 @@ def calculate_uncertainty(
     else:
 
         normalised_entropy = 0.0
+
 
     return {
         "top_probability":
@@ -316,37 +598,48 @@ def classify_certainty(
     normalised_entropy: float,
 ) -> str:
     """
-    Convert distribution shape into a restrained certainty label.
+    Convert probability-distribution shape into a restrained
+    certainty category.
 
-    This is a product-level interpretation of model uncertainty.
+    This is a product-level interpretation of model ambiguity.
 
-    It is NOT a claim that the recommendation is clinically
-    correct or has a certain probability of being effective.
+    It does not represent clinical certainty.
     """
 
     certainty_score = (
-        0.45 * top_probability
-        + 0.35 * min(
-            probability_margin * 2.0,
+        0.45
+        * top_probability
+
+        + 0.35
+        * min(
+            probability_margin
+            * 2.0,
             1.0,
         )
-        + 0.20 * (
+
+        + 0.20
+        * (
             1.0
             - normalised_entropy
         )
     )
 
+
     if certainty_score >= 0.58:
+
         return "High"
 
+
     if certainty_score >= 0.38:
+
         return "Moderate"
+
 
     return "Low"
 
 
 # ============================================================
-# Main compatibility function
+# Main prediction function
 # ============================================================
 
 def predict_nudge(
@@ -355,17 +648,16 @@ def predict_nudge(
     mood,
     energy,
     screen_time,
+    activity_minutes,
+    connectedness,
     activity,
     day_type,
-    social,
     hour,
 ):
     """
     Return:
         primary recommendation
         associated model probability
-
-    Retained for compatibility with existing NudgeWise code.
     """
 
     details = get_prediction_details(
@@ -374,16 +666,23 @@ def predict_nudge(
         mood=mood,
         energy=energy,
         screen_time=screen_time,
+        activity_minutes=activity_minutes,
+        connectedness=connectedness,
         activity=activity,
         day_type=day_type,
-        social=social,
         hour=hour,
         include_explanation=False,
     )
 
+
     return (
-        details["prediction"],
-        details["confidence"],
+        details[
+            "prediction"
+        ],
+
+        details[
+            "confidence"
+        ],
     )
 
 
@@ -397,37 +696,68 @@ def calculate_local_sensitivity(
     mood,
     energy,
     screen_time,
+    activity_minutes,
+    connectedness,
     activity,
     day_type,
-    social,
     hour,
     prediction,
 ):
     """
-    Estimate which inputs most influenced the current prediction.
+    Estimate which inputs most supported the selected
+    recommendation.
 
-    Method:
-    Each feature is individually replaced with a neutral reference
-    value. The reduction in the selected recommendation probability
+    Method
+    ------
+    Each feature is independently replaced with a neutral
+    reference value.
+
+    The change in the selected recommendation's probability
     is measured.
 
-    A larger reduction means the original feature value was more
-    supportive of that recommendation.
+    Positive effect:
+        original value supported the recommendation
 
-    This is local model sensitivity, NOT causation.
+    Negative effect:
+        original value reduced the recommendation
+
+    This is local model sensitivity.
+
+    It is NOT causal inference.
     """
 
     original_values = {
-        "sleep": sleep,
-        "stress": stress,
-        "mood": mood,
-        "energy": energy,
-        "screen_time": screen_time,
-        "activity": activity,
-        "day_type": day_type,
-        "social": social,
-        "hour": hour,
+        "sleep":
+            sleep,
+
+        "stress":
+            stress,
+
+        "mood":
+            mood,
+
+        "energy":
+            energy,
+
+        "screen_time":
+            screen_time,
+
+        "activity_minutes":
+            activity_minutes,
+
+        "connectedness":
+            connectedness,
+
+        "hour":
+            hour,
+
+        "activity":
+            activity,
+
+        "day_type":
+            day_type,
     }
+
 
     original_probabilities = (
         predict_probabilities(
@@ -435,25 +765,28 @@ def calculate_local_sensitivity(
         )
     )
 
+
     original_probability = (
         original_probabilities[
             prediction
         ]
     )
 
+
     sensitivities = []
+
 
     for feature_name in FEATURES:
 
-        if (
-            feature_name
-            not in REFERENCE_VALUES
-        ):
+        if feature_name not in REFERENCE_VALUES:
+
             continue
+
 
         perturbed = (
             original_values.copy()
         )
+
 
         perturbed[
             feature_name
@@ -461,11 +794,13 @@ def calculate_local_sensitivity(
             feature_name
         ]
 
+
         perturbed_probabilities = (
             predict_probabilities(
                 **perturbed
             )
         )
+
 
         perturbed_probability = (
             perturbed_probabilities.get(
@@ -474,10 +809,12 @@ def calculate_local_sensitivity(
             )
         )
 
+
         effect = (
             original_probability
             - perturbed_probability
         )
+
 
         sensitivities.append(
             {
@@ -507,19 +844,123 @@ def calculate_local_sensitivity(
             }
         )
 
+
     sensitivities.sort(
         key=lambda item:
             abs(
-                item["effect"]
+                item[
+                    "effect"
+                ]
             ),
         reverse=True,
     )
+
 
     return sensitivities
 
 
 # ============================================================
-# Human-readable model explanation
+# Human-readable explanation helper
+# ============================================================
+
+def _human_reason(
+    feature: str,
+    value,
+) -> str:
+    """
+    Convert influential features into restrained user-facing
+    explanation text.
+    """
+
+    if feature == "sleep":
+
+        return (
+            f"Your reported sleep was {float(value):.1f} hours, "
+            "which influenced the model's preference."
+        )
+
+
+    if feature == "stress":
+
+        return (
+            f"Your stress rating was {int(value)}/5, "
+            "which influenced the model's preference."
+        )
+
+
+    if feature == "mood":
+
+        return (
+            f"Your mood rating was {int(value)}/5, "
+            "which influenced the model's preference."
+        )
+
+
+    if feature == "energy":
+
+        return (
+            f"Your energy rating was {int(value)}/5, "
+            "which influenced the model's preference."
+        )
+
+
+    if feature == "screen_time":
+
+        return (
+            f"You reported {float(value):.1f} hours of recreational "
+            "screen time, which influenced the model's preference."
+        )
+
+
+    if feature == "activity_minutes":
+
+        return (
+            f"You reported about {int(value)} minutes of physical "
+            "activity, which influenced the model's preference."
+        )
+
+
+    if feature == "connectedness":
+
+        return (
+            f"Your connectedness rating was {int(value)}/5, "
+            "which influenced the model's preference."
+        )
+
+
+    if feature == "activity":
+
+        return (
+            f"Your current context was {str(value).lower()}, "
+            "which affected how appropriate different suggestions "
+            "were at this moment."
+        )
+
+
+    if feature == "hour":
+
+        return (
+            "The time of day influenced which suggestions "
+            "were most contextually appropriate."
+        )
+
+
+    if feature == "day_type":
+
+        return (
+            "Whether this was a weekday or weekend had a small "
+            "contextual influence on the model."
+        )
+
+
+    return (
+        f"Your {DISPLAY_NAMES.get(feature, feature)} "
+        "influenced the model's preference."
+    )
+
+
+# ============================================================
+# Human-readable explanation
 # ============================================================
 
 def explain_prediction(
@@ -530,15 +971,15 @@ def explain_prediction(
     hour,
     energy,
     mood,
+    activity_minutes,
+    connectedness,
     activity="Relaxing",
-    social="Medium",
     day_type="Weekday",
 ):
     """
-    Return model-linked explanation text.
+    Return local model-sensitivity explanations.
 
-    Explanations describe local model sensitivity rather than
-    claiming that an input caused the recommendation.
+    The wording intentionally avoids causal claims.
     """
 
     sensitivities = (
@@ -548,47 +989,58 @@ def explain_prediction(
             mood=mood,
             energy=energy,
             screen_time=screen_time,
+            activity_minutes=activity_minutes,
+            connectedness=connectedness,
             activity=activity,
             day_type=day_type,
-            social=social,
             hour=hour,
             prediction=prediction,
         )
     )
 
+
     positive = [
         item
+
         for item
         in sensitivities
+
         if item[
             "effect"
         ] > 0.005
     ]
 
+
     if not positive:
 
         return [
             (
-                "This recommendation reflects the "
-                "combined pattern across your latest check-in."
+                "This recommendation reflects the combined "
+                "pattern across your latest check-in rather than "
+                "one dominant input."
             )
         ]
+
 
     reasons = []
 
-    for item in positive[:3]:
 
-        name = item[
-            "display_name"
-        ]
+    for item in positive[
+        :3
+    ]:
 
         reasons.append(
-            (
-                f"Your {name} was one of the inputs "
-                f"that increased the model's preference "
-                f"for this recommendation."
+            _human_reason(
+                feature=item[
+                    "feature"
+                ],
+
+                value=item[
+                    "original_value"
+                ],
             )
         )
+
 
     return reasons
 
@@ -603,9 +1055,10 @@ def get_prediction_details(
     mood,
     energy,
     screen_time,
+    activity_minutes,
+    connectedness,
     activity,
     day_type,
-    social,
     hour,
     include_explanation=True,
 ):
@@ -617,33 +1070,45 @@ def get_prediction_details(
             mood=mood,
             energy=energy,
             screen_time=screen_time,
+            activity_minutes=activity_minutes,
+            connectedness=connectedness,
             activity=activity,
             day_type=day_type,
-            social=social,
             hour=hour,
         )
     )
 
+
     ordered = sorted(
         probabilities.items(),
         key=lambda item:
-            item[1],
+            item[
+                1
+            ],
         reverse=True,
     )
 
+
     prediction = (
-        ordered[0][0]
+        ordered[
+            0
+        ][0]
     )
 
+
     confidence = (
-        ordered[0][1]
+        ordered[
+            0
+        ][1]
     )
+
 
     uncertainty = (
         calculate_uncertainty(
             probabilities
         )
     )
+
 
     certainty = (
         classify_certainty(
@@ -652,11 +1117,13 @@ def get_prediction_details(
                     "top_probability"
                 ]
             ),
+
             probability_margin=(
                 uncertainty[
                     "probability_margin"
                 ]
             ),
+
             normalised_entropy=(
                 uncertainty[
                     "normalised_entropy"
@@ -665,12 +1132,17 @@ def get_prediction_details(
         )
     )
 
+
     result = {
         "prediction":
             prediction,
 
-        # Compatibility name.
-        # UI should call this model probability.
+        # Compatibility key.
+        #
+        # UI wording should call this:
+        # model probability
+        #
+        # NOT accuracy.
         "confidence":
             confidence,
 
@@ -681,12 +1153,20 @@ def get_prediction_details(
             ordered,
 
         "top_two":
-            ordered[:2],
+            ordered[
+                :2
+            ],
 
         "alternative":
             (
-                ordered[1]
-                if len(ordered) > 1
+                ordered[
+                    1
+                ]
+
+                if len(
+                    ordered
+                ) > 1
+
                 else None
             ),
 
@@ -707,7 +1187,11 @@ def get_prediction_details(
 
         "certainty":
             certainty,
+
+        "model_version":
+            MODEL_VERSION,
     }
+
 
     if include_explanation:
 
@@ -719,12 +1203,14 @@ def get_prediction_details(
             mood=mood,
             energy=energy,
             screen_time=screen_time,
+            activity_minutes=activity_minutes,
+            connectedness=connectedness,
             activity=activity,
             day_type=day_type,
-            social=social,
             hour=hour,
             prediction=prediction,
         )
+
 
         result[
             "reasons"
@@ -736,10 +1222,12 @@ def get_prediction_details(
             hour=hour,
             energy=energy,
             mood=mood,
+            activity_minutes=activity_minutes,
+            connectedness=connectedness,
             activity=activity,
-            social=social,
             day_type=day_type,
         )
+
 
     return result
 
@@ -751,38 +1239,55 @@ def get_prediction_details(
 if __name__ == "__main__":
 
     details = get_prediction_details(
-        sleep=7.5,
-        stress=1,
-        mood=1,
-        energy=1,
-        screen_time=3.0,
+        sleep=6.5,
+        stress=4,
+        mood=3,
+        energy=2,
+        screen_time=5.0,
+        activity_minutes=20,
+        connectedness=2,
         activity="Studying",
         day_type="Weekday",
-        social="Low",
-        hour=23,
+        hour=21,
     )
+
 
     print()
-    print("=" * 70)
-    print("NUDGEWISE AI V2.6")
-    print("=" * 70)
+    print("=" * 72)
+    print(
+        "NUDGEWISE AI V2.6 PRODUCTION TEST"
+    )
+    print("=" * 72)
+
+
+    print()
+    print(
+        f"Model version: "
+        f"{details['model_version']}"
+    )
+
 
     print(
-        f"\nPrimary recommendation: "
+        f"Primary recommendation: "
         f"{details['prediction']}"
     )
+
 
     print(
         f"Model probability: "
         f"{details['confidence']:.1%}"
     )
 
+
     print(
         f"Model certainty: "
         f"{details['certainty']}"
     )
 
-    if details["alternative"]:
+
+    if details[
+        "alternative"
+    ]:
 
         print(
             f"Alternative: "
@@ -790,9 +1295,12 @@ if __name__ == "__main__":
             f"({details['alternative'][1]:.1%})"
         )
 
+
+    print()
     print(
-        "\nProbability distribution:"
+        "Probability distribution:"
     )
+
 
     for (
         class_name,
@@ -806,19 +1314,25 @@ if __name__ == "__main__":
             f"{probability:>8.1%}"
         )
 
+
+    print()
     print(
-        f"\nTop-two margin: "
+        f"Top-two margin: "
         f"{details['probability_margin']:.3f}"
     )
+
 
     print(
         f"Normalised entropy: "
         f"{details['normalised_entropy']:.3f}"
     )
 
+
+    print()
     print(
-        "\nLocal explanation:"
+        "Local explanation:"
     )
+
 
     for reason in details[
         "reasons"
@@ -828,5 +1342,6 @@ if __name__ == "__main__":
             f"- {reason}"
         )
 
+
     print()
-    print("=" * 70)
+    print("=" * 72)

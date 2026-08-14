@@ -1,12 +1,12 @@
 """
 pages/dashboard.py
 
-NudgeWise Version 2
+NudgeWise Version 2.6
 Authenticated personal wellbeing dashboard.
 
 Features:
 - participant-specific data
-- wellbeing indicator
+- research-level wellbeing indicator
 - latest AI recommendation
 - model certainty and alternatives
 - local explainability
@@ -14,6 +14,18 @@ Features:
 - longitudinal trends
 - recent check-in management
 - retrospective/missed-day check-ins
+- physical activity minutes
+- perceived connectedness
+
+IMPORTANT
+---------
+The wellbeing indicator is a product-level research summary.
+It is NOT a clinical score.
+
+Model probabilities describe the relative preference distribution
+learned from the NudgeWise synthetic decision model.
+
+They are NOT probabilities that an intervention will work.
 """
 
 from __future__ import annotations
@@ -28,6 +40,7 @@ from components.theme import (
     apply_theme,
     configure_page,
 )
+
 
 # ============================================================
 # Page configuration
@@ -60,8 +73,8 @@ from database import (
     create_tables,
     delete_checkin,
     get_feedback_for_prediction,
-    get_latest_prediction,
     get_recent_checkins,
+    get_recent_predictions,
     get_user,
     save_feedback,
 )
@@ -90,6 +103,7 @@ NZ_TIMEZONE = ZoneInfo(
 # ============================================================
 
 create_tables()
+
 render_sidebar()
 
 
@@ -108,6 +122,7 @@ participant = (
     ensure_current_participant()
 )
 
+
 if participant is None:
 
     st.switch_page(
@@ -123,6 +138,7 @@ user_id = st.session_state.get(
     "user_id"
 )
 
+
 if user_id is None:
 
     st.switch_page(
@@ -133,6 +149,7 @@ if user_id is None:
 participant = get_user(
     user_id
 )
+
 
 if participant is None:
 
@@ -147,8 +164,12 @@ if participant is None:
 
 
 nickname = (
-    participant.get("nickname")
-    or participant.get("name")
+    participant.get(
+        "nickname"
+    )
+    or participant.get(
+        "name"
+    )
     or "Participant"
 )
 
@@ -167,7 +188,7 @@ today_string = (
 
 
 # ============================================================
-# Load check-ins
+# Load data
 # ============================================================
 
 rows = get_recent_checkins(
@@ -175,8 +196,15 @@ rows = get_recent_checkins(
     limit=60,
 )
 
+
 checkins = pd.DataFrame(
     rows
+)
+
+
+prediction_rows = get_recent_predictions(
+    user_id=user_id,
+    limit=100,
 )
 
 
@@ -190,84 +218,284 @@ def safe_number(
 ) -> float:
 
     try:
-        return float(value)
+
+        if pd.isna(
+            value
+        ):
+
+            return default
+
+        return float(
+            value
+        )
 
     except (
         TypeError,
         ValueError,
     ):
+
         return default
 
+
+def clamp(
+    value: float,
+    minimum: float = 0.0,
+    maximum: float = 1.0,
+) -> float:
+
+    return max(
+        minimum,
+        min(
+            maximum,
+            value,
+        ),
+    )
+
+
+def get_day_type_for_date(
+    date_value,
+) -> str:
+    """
+    Determine weekday/weekend from the check-in date itself.
+
+    This matters for retrospective entries because using the
+    current day would give the AI incorrect context.
+    """
+
+    parsed = pd.to_datetime(
+        date_value,
+        errors="coerce",
+    )
+
+    if pd.isna(
+        parsed
+    ):
+
+        return (
+            "Weekend"
+            if now.weekday() >= 5
+            else "Weekday"
+        )
+
+    return (
+        "Weekend"
+        if parsed.weekday() >= 5
+        else "Weekday"
+    )
+
+
+def get_prediction_for_checkin(
+    checkin_id: int,
+):
+    """
+    Find the stored prediction belonging to a specific check-in.
+
+    This avoids accidentally attaching feedback to a prediction
+    from a different date.
+    """
+
+    for prediction_row in prediction_rows:
+
+        if int(
+            prediction_row[
+                "checkin_id"
+            ]
+        ) == int(
+            checkin_id
+        ):
+
+            return prediction_row
+
+    return None
+
+
+# ============================================================
+# Wellbeing indicator
+# ============================================================
 
 def wellbeing_indicator(
     checkin: pd.Series,
 ) -> int:
     """
-    Product-level wellbeing indicator.
+    NudgeWise v2.6 product-level wellbeing indicator.
 
-    Not a clinical measure.
+    This is NOT a clinical assessment.
+
+    Components:
+    - sleep
+    - stress
+    - mood
+    - energy
+    - physical activity
+    - connectedness
+
+    Screen time is deliberately NOT converted directly into a
+    wellbeing-score penalty because NudgeWise does not assume a
+    universal evidence-backed harmful screen-time threshold.
+
+    Activity uses 60 minutes only as a research reference derived
+    from adolescent physical-activity guidance. It is not treated
+    as a diagnostic daily pass/fail threshold.
     """
 
     sleep = safe_number(
-        checkin.get("sleep")
-    )
-
-    screen_time = safe_number(
-        checkin.get("screen_time")
-    )
-
-    mood = safe_number(
-        checkin.get("mood")
+        checkin.get(
+            "sleep"
+        )
     )
 
     stress = safe_number(
-        checkin.get("stress")
+        checkin.get(
+            "stress"
+        ),
+        3.0,
+    )
+
+    mood = safe_number(
+        checkin.get(
+            "mood"
+        ),
+        3.0,
     )
 
     energy = safe_number(
-        checkin.get("energy")
+        checkin.get(
+            "energy"
+        ),
+        3.0,
+    )
+
+    activity_minutes = safe_number(
+        checkin.get(
+            "activity_minutes"
+        )
+    )
+
+    connectedness = safe_number(
+        checkin.get(
+            "connectedness"
+        ),
+        3.0,
     )
 
 
-    sleep_component = min(
-        sleep / 8.0,
-        1.0,
+    # --------------------------------------------------------
+    # Sleep
+    #
+    # 8 hours is the lower evidence-backed adolescent reference.
+    # Values above that are not rewarded indefinitely.
+    # --------------------------------------------------------
+
+    sleep_component = clamp(
+        sleep / 8.0
     )
 
-    screen_component = max(
-        0.0,
-        1.0 - screen_time / 10.0,
+
+    # --------------------------------------------------------
+    # Stress
+    #
+    # 1 = very low
+    # 5 = very high
+    # --------------------------------------------------------
+
+    stress_component = clamp(
+        (
+            5.0
+            - stress
+        )
+        / 4.0
     )
 
-    mood_component = (
-        mood / 5.0
+
+    # --------------------------------------------------------
+    # Mood
+    #
+    # 1 = very low
+    # 5 = very good
+    # --------------------------------------------------------
+
+    mood_component = clamp(
+        (
+            mood
+            - 1.0
+        )
+        / 4.0
     )
 
-    stress_component = (
-        1.0 - stress / 5.0
+
+    # --------------------------------------------------------
+    # Energy
+    #
+    # 1 = very low
+    # 5 = very high
+    # --------------------------------------------------------
+
+    energy_component = clamp(
+        (
+            energy
+            - 1.0
+        )
+        / 4.0
     )
 
-    energy_component = (
-        energy / 5.0
+
+    # --------------------------------------------------------
+    # Physical activity
+    #
+    # 60 minutes is used as a smooth daily research reference,
+    # not a clinical threshold.
+    # --------------------------------------------------------
+
+    activity_component = clamp(
+        activity_minutes
+        / 60.0
     )
+
+
+    # --------------------------------------------------------
+    # Connectedness
+    #
+    # 1 = not connected at all
+    # 5 = very connected
+    # --------------------------------------------------------
+
+    connection_component = clamp(
+        (
+            connectedness
+            - 1.0
+        )
+        / 4.0
+    )
+
+
+    components = [
+        sleep_component,
+        stress_component,
+        mood_component,
+        energy_component,
+        activity_component,
+        connection_component,
+    ]
 
 
     score = (
-        sleep_component * 20
-        + screen_component * 20
-        + mood_component * 20
-        + stress_component * 20
-        + energy_component * 20
+        sum(
+            components
+        )
+        / len(
+            components
+        )
+        * 100.0
     )
 
 
     return int(
-        max(
-            0,
-            min(
-                100,
-                round(score),
-            ),
+        round(
+            clamp(
+                score,
+                0.0,
+                100.0,
+            )
         )
     )
 
@@ -279,56 +507,75 @@ def wellbeing_description(
     if score >= 75:
 
         return (
-            "Your latest check-in suggests that "
-            "things are generally tracking well."
+            "Your latest self-reported check-in is generally "
+            "tracking well across the measures included in "
+            "the NudgeWise wellbeing indicator."
         )
+
 
     if score >= 50:
 
         return (
-            "Your latest check-in looks fairly balanced, "
-            "with a few areas worth keeping an eye on."
+            "Your latest check-in looks mixed overall, with "
+            "some measures tracking well and others potentially "
+            "worth paying attention to."
         )
 
+
     return (
-        "Your latest check-in suggests there may be "
-        "a few areas worth paying attention to."
+        "Several measures in your latest check-in are currently "
+        "below the stronger end of your NudgeWise wellbeing indicator."
     )
 
+
+# ============================================================
+# History preparation
+# ============================================================
 
 def build_history(
     dataframe: pd.DataFrame,
 ) -> pd.DataFrame:
 
     if dataframe.empty:
+
         return pd.DataFrame()
+
 
     history = dataframe.copy()
 
-    history["created_at"] = (
-        pd.to_datetime(
-            history["created_at"],
-            errors="coerce",
-        )
-    )
 
-    parsed_dates = pd.to_datetime(
-        history["checkin_date"],
+    history[
+        "created_at"
+    ] = pd.to_datetime(
+        history[
+            "created_at"
+        ],
         errors="coerce",
     )
 
-    history["date"] = (
-        parsed_dates.dt.strftime(
-            "%d %b"
-        )
+
+    parsed_dates = pd.to_datetime(
+        history[
+            "checkin_date"
+        ],
+        errors="coerce",
     )
 
-    history["score"] = (
-        history.apply(
-            wellbeing_indicator,
-            axis=1,
-        )
+
+    history[
+        "date"
+    ] = parsed_dates.dt.strftime(
+        "%d %b"
     )
+
+
+    history[
+        "score"
+    ] = history.apply(
+        wellbeing_indicator,
+        axis=1,
+    )
+
 
     return history
 
@@ -345,13 +592,16 @@ if checkins.empty:
         )
     )
 
+
     st.title(
         "Your wellbeing"
     )
 
+
     st.write(
         f"Welcome, {nickname}."
     )
+
 
     empty_state(
         "Your dashboard is ready.",
@@ -361,7 +611,9 @@ if checkins.empty:
         ),
     )
 
+
     st.write("")
+
 
     if st.button(
         "Complete today's check-in",
@@ -373,7 +625,9 @@ if checkins.empty:
             "app.py"
         )
 
+
     st.write("")
+
 
     if st.button(
         "Add a missed check-in",
@@ -385,6 +639,7 @@ if checkins.empty:
             "pages/past_checkin.py"
         )
 
+
     st.stop()
 
 
@@ -392,19 +647,35 @@ if checkins.empty:
 # Prepare data
 # ============================================================
 
-checkins["created_at"] = (
-    pd.to_datetime(
-        checkins["created_at"],
-        errors="coerce",
-    )
+checkins[
+    "created_at"
+] = pd.to_datetime(
+    checkins[
+        "created_at"
+    ],
+    errors="coerce",
 )
 
 
 if "entry_type" not in checkins.columns:
 
-    checkins["entry_type"] = (
-        "live"
-    )
+    checkins[
+        "entry_type"
+    ] = "live"
+
+
+if "activity_minutes" not in checkins.columns:
+
+    checkins[
+        "activity_minutes"
+    ] = 0
+
+
+if "connectedness" not in checkins.columns:
+
+    checkins[
+        "connectedness"
+    ] = 3
 
 
 checkins = (
@@ -422,7 +693,16 @@ checkins = (
 
 
 latest = (
-    checkins.iloc[-1]
+    checkins.iloc[
+        -1
+    ]
+)
+
+
+latest_checkin_id = int(
+    latest[
+        "id"
+    ]
 )
 
 
@@ -431,7 +711,9 @@ latest = (
 # ============================================================
 
 latest_date = pd.to_datetime(
-    latest.get("checkin_date"),
+    latest.get(
+        "checkin_date"
+    ),
     errors="coerce",
 )
 
@@ -459,9 +741,11 @@ st.caption(
     date_caption
 )
 
+
 st.title(
     "Your wellbeing"
 )
+
 
 st.write(
     f"A personal view of {nickname}'s recent "
@@ -477,6 +761,7 @@ score = wellbeing_indicator(
     latest
 )
 
+
 wellbeing_score(
     score=score,
     description=(
@@ -484,6 +769,11 @@ wellbeing_score(
             score
         )
     ),
+)
+
+
+st.caption(
+    "Research indicator only · not a medical or clinical score"
 )
 
 
@@ -495,26 +785,77 @@ metric_row(
     [
         (
             "Sleep",
-            f"{safe_number(latest.get('sleep')):.1f} h",
-            "latest check-in",
+            (
+                f"{safe_number(latest.get('sleep')):.1f} h"
+            ),
+            "last main sleep period",
+        ),
+
+        (
+            "Physical activity",
+            (
+                f"{safe_number(latest.get('activity_minutes')):.0f} min"
+            ),
+            "reported today",
+        ),
+
+        (
+            "Connectedness",
+            (
+                f"{safe_number(latest.get('connectedness'), 3):.0f} / 5"
+            ),
+            "self-reported",
         ),
 
         (
             "Screen time",
-            f"{safe_number(latest.get('screen_time')):.1f} h",
+            (
+                f"{safe_number(latest.get('screen_time')):.1f} h"
+            ),
             "recreational",
+        ),
+    ]
+)
+
+
+st.write("")
+
+
+metric_row(
+    [
+        (
+            "Mood",
+            (
+                f"{safe_number(latest.get('mood')):.0f} / 5"
+            ),
+            "higher = better",
         ),
 
         (
-            "Mood",
-            f"{safe_number(latest.get('mood')):.0f} / 5",
-            "self-reported",
+            "Stress",
+            (
+                f"{safe_number(latest.get('stress')):.0f} / 5"
+            ),
+            "higher = more stress",
         ),
 
         (
             "Energy",
-            f"{safe_number(latest.get('energy')):.0f} / 5",
-            "self-reported",
+            (
+                f"{safe_number(latest.get('energy')):.0f} / 5"
+            ),
+            "higher = more energy",
+        ),
+
+        (
+            "Current context",
+            str(
+                latest.get(
+                    "activity",
+                    "—",
+                )
+            ),
+            "at check-in",
         ),
     ]
 )
@@ -532,58 +873,87 @@ section_heading(
 )
 
 
-prediction_record = (
-    get_latest_prediction(
-        user_id
+latest_day_type = (
+    get_day_type_for_date(
+        latest.get(
+            "checkin_date"
+        )
     )
-)
-
-
-current_day_type = (
-    "Weekend"
-    if now.weekday() >= 5
-    else "Weekday"
 )
 
 
 ai_details = get_prediction_details(
     sleep=safe_number(
-        latest.get("sleep")
+        latest.get(
+            "sleep"
+        )
     ),
+
     stress=int(
         safe_number(
-            latest.get("stress")
+            latest.get(
+                "stress"
+            ),
+            3,
         )
     ),
+
     mood=int(
         safe_number(
-            latest.get("mood")
+            latest.get(
+                "mood"
+            ),
+            3,
         )
     ),
+
     energy=int(
         safe_number(
-            latest.get("energy")
+            latest.get(
+                "energy"
+            ),
+            3,
         )
     ),
+
     screen_time=safe_number(
-        latest.get("screen_time")
+        latest.get(
+            "screen_time"
+        )
     ),
+
+    activity_minutes=int(
+        safe_number(
+            latest.get(
+                "activity_minutes"
+            ),
+            0,
+        )
+    ),
+
+    connectedness=int(
+        safe_number(
+            latest.get(
+                "connectedness"
+            ),
+            3,
+        )
+    ),
+
     activity=str(
         latest.get(
             "activity",
             "Relaxing",
         )
     ),
-    day_type=current_day_type,
-    social=str(
-        latest.get(
-            "social",
-            "Medium",
-        )
-    ),
+
+    day_type=latest_day_type,
+
     hour=int(
         safe_number(
-            latest.get("hour"),
+            latest.get(
+                "hour"
+            ),
             now.hour,
         )
     ),
@@ -591,16 +961,24 @@ ai_details = get_prediction_details(
 
 
 recommendation(
-    title=ai_details["prediction"],
+    title=ai_details[
+        "prediction"
+    ],
+
     explanation=(
-        "NudgeWise selected this option from six "
-        "possible digital wellbeing interventions."
+        "NudgeWise selected this option from six possible "
+        "digital wellbeing interventions based on the combined "
+        "pattern in this check-in."
     ),
+
     confidence=(
         f"{ai_details['confidence']:.0%}"
     ),
+
     certainty=(
-        ai_details["certainty"]
+        ai_details[
+            "certainty"
+        ]
     ),
 )
 
@@ -623,13 +1001,16 @@ with certainty_col:
         "MODEL CERTAINTY"
     )
 
+
     st.markdown(
         f"### {ai_details['certainty']}"
     )
 
+
     st.caption(
-        "This reflects how strongly the model "
-        "separates its preferred option from alternatives."
+        "This describes how strongly the model separates its "
+        "preferred intervention from the alternatives. It is "
+        "not certainty that the intervention will work."
     )
 
 
@@ -639,15 +1020,20 @@ with alternative_col:
         "NEXT MOST LIKELY"
     )
 
+
     alternative = (
-        ai_details["alternative"]
+        ai_details[
+            "alternative"
+        ]
     )
+
 
     if alternative:
 
         st.markdown(
             f"### {alternative[0]}"
         )
+
 
         st.caption(
             f"Model probability: "
@@ -667,11 +1053,13 @@ with alternative_col:
 
 st.write("")
 
+
 section_heading(
     "Why NudgeWise suggested this",
     (
-        "These statements describe which inputs most "
-        "influenced this model output. They do not imply causation."
+        "These statements come from local model-sensitivity "
+        "analysis. They describe which inputs most supported "
+        "this model output and do not imply causation."
     ),
 )
 
@@ -682,6 +1070,62 @@ for reason in ai_details[
 
     st.write(
         f"• {reason}"
+    )
+
+
+# ============================================================
+# Influential input details
+# ============================================================
+
+with st.expander(
+    "See model sensitivity details"
+):
+
+    st.caption(
+        "Each input is compared with a reference value while "
+        "the other inputs are kept unchanged."
+    )
+
+
+    positive_sensitivities = [
+        item
+        for item
+        in ai_details.get(
+            "sensitivities",
+            []
+        )
+        if item[
+            "effect"
+        ] > 0
+    ]
+
+
+    if positive_sensitivities:
+
+        for item in positive_sensitivities[
+            :5
+        ]:
+
+            st.write(
+                f"**{item['display_name'].title()}**"
+            )
+
+            st.caption(
+                f"Local probability influence: "
+                f"{item['effect']:+.1%}"
+            )
+
+    else:
+
+        st.write(
+            "No single input had a strong positive local effect. "
+            "The recommendation emerged from the combined pattern."
+        )
+
+
+    st.caption(
+        "Local sensitivity is an explainability method, "
+        "not a causal-effect estimate."
     )
 
 
@@ -704,25 +1148,25 @@ with st.expander(
             recommendation_name
         )
 
+
         st.progress(
             float(
-                max(
-                    0.0,
-                    min(
-                        1.0,
-                        probability,
-                    ),
+                clamp(
+                    probability
                 )
             )
         )
+
 
         st.caption(
             f"{probability:.1%}"
         )
 
+
     st.caption(
-        "These values are model preference probabilities, "
-        "not probabilities that an intervention will work."
+        "These values describe the model's relative preference "
+        "distribution. They are not probabilities that an "
+        "intervention will improve wellbeing."
     )
 
 
@@ -730,9 +1174,17 @@ with st.expander(
 # Recommendation feedback
 # ============================================================
 
+prediction_record = (
+    get_prediction_for_checkin(
+        latest_checkin_id
+    )
+)
+
+
 if prediction_record:
 
     st.write("")
+
 
     section_heading(
         "How was this recommendation?",
@@ -744,7 +1196,9 @@ if prediction_record:
 
 
     prediction_id = int(
-        prediction_record["id"]
+        prediction_record[
+            "id"
+        ]
     )
 
 
@@ -775,7 +1229,9 @@ if prediction_record:
 
             st.metric(
                 "Helpfulness",
-                f"{existing_feedback['rating']} / 5",
+                (
+                    f"{existing_feedback['rating']} / 5"
+                ),
             )
 
 
@@ -787,11 +1243,14 @@ if prediction_record:
                 )
             )
 
+
             if sense_value is not None:
 
                 st.metric(
                     "Made sense",
-                    f"{sense_value} / 5",
+                    (
+                        f"{sense_value} / 5"
+                    ),
                 )
 
 
@@ -808,12 +1267,14 @@ if prediction_record:
                 value=3,
             )
 
+
             makes_sense = st.slider(
                 "How much did this recommendation make sense?",
                 min_value=1,
                 max_value=5,
                 value=3,
             )
+
 
             followed = st.radio(
                 "Did you follow the recommendation?",
@@ -825,10 +1286,12 @@ if prediction_record:
                 horizontal=True,
             )
 
+
             comment = st.text_area(
                 "Anything you would change? (optional)",
                 max_chars=500,
             )
+
 
             feedback_submit = (
                 st.form_submit_button(
@@ -847,29 +1310,36 @@ if prediction_record:
                 "Yes": 2,
             }
 
+
             save_feedback(
                 prediction_id=prediction_id,
+
                 accepted=(
                     1
                     if helpfulness >= 3
                     else 0
                 ),
+
                 completed=(
                     completed_map[
                         followed
                     ]
                 ),
+
                 rating=int(
                     helpfulness
                 ),
+
                 makes_sense=int(
                     makes_sense
                 ),
+
                 comment=(
                     comment.strip()
                     or None
                 ),
             )
+
 
             st.rerun()
 
@@ -889,8 +1359,8 @@ history = build_history(
 section_heading(
     "Your trends",
     (
-        "Patterns become more informative "
-        "as your personal history grows."
+        "Patterns become more informative as your "
+        "personal history grows."
     ),
 )
 
@@ -903,16 +1373,19 @@ if not history.empty:
         score_column="score",
     )
 
+
     mood_energy_chart(
         history,
         date_column="date",
     )
+
 
     screen_time_chart(
         history,
         date_column="date",
         screen_column="screen_time",
     )
+
 
 else:
 
@@ -950,15 +1423,20 @@ recent = (
         ],
         ascending=False,
     )
-    .head(7)
+    .head(
+        7
+    )
 )
 
 
 for _, row in recent.iterrows():
 
     checkin_id = int(
-        row["id"]
+        row[
+            "id"
+        ]
     )
+
 
     checkin_date = str(
         row.get(
@@ -967,12 +1445,14 @@ for _, row in recent.iterrows():
         )
     )
 
+
     entry_type = str(
         row.get(
             "entry_type",
             "live",
         )
     )
+
 
     is_today = (
         checkin_date
@@ -990,7 +1470,9 @@ for _, row in recent.iterrows():
         parsed_date.strftime(
             "%A, %d %B"
         )
-        if not pd.isna(parsed_date)
+        if not pd.isna(
+            parsed_date
+        )
         else checkin_date
     )
 
@@ -1001,7 +1483,10 @@ for _, row in recent.iterrows():
 
         information_col, action_col = (
             st.columns(
-                [3.2, 1],
+                [
+                    3.2,
+                    1,
+                ],
                 gap="large",
             )
         )
@@ -1013,23 +1498,40 @@ for _, row in recent.iterrows():
                 f"### {date_display}"
             )
 
-            st.caption(
-                (
-                    f"Sleep {safe_number(row.get('sleep')):.1f} h"
-                    f" · Screen {safe_number(row.get('screen_time')):.1f} h"
-                    f" · Mood {safe_number(row.get('mood')):.0f}/5"
-                    f" · Stress {safe_number(row.get('stress')):.0f}/5"
-                    f" · Energy {safe_number(row.get('energy')):.0f}/5"
-                )
-            )
 
             st.caption(
                 (
-                    f"{row.get('activity', '')}"
-                    f" · Social interaction: "
-                    f"{row.get('social', '')}"
+                    f"Sleep "
+                    f"{safe_number(row.get('sleep')):.1f} h"
+                    f" · Mood "
+                    f"{safe_number(row.get('mood')):.0f}/5"
+                    f" · Stress "
+                    f"{safe_number(row.get('stress')):.0f}/5"
+                    f" · Energy "
+                    f"{safe_number(row.get('energy')):.0f}/5"
                 )
             )
+
+
+            st.caption(
+                (
+                    f"Activity "
+                    f"{safe_number(row.get('activity_minutes')):.0f} min"
+                    f" · Connectedness "
+                    f"{safe_number(row.get('connectedness'), 3):.0f}/5"
+                    f" · Screen "
+                    f"{safe_number(row.get('screen_time')):.1f} h"
+                )
+            )
+
+
+            st.caption(
+                (
+                    f"Context: "
+                    f"{row.get('activity', '')}"
+                )
+            )
+
 
             if entry_type == "retrospective":
 
@@ -1044,7 +1546,9 @@ for _, row in recent.iterrows():
 
                 if st.button(
                     "Edit",
-                    key=f"edit_{checkin_id}",
+                    key=(
+                        f"edit_{checkin_id}"
+                    ),
                     width="stretch",
                 ):
 
@@ -1071,7 +1575,9 @@ for _, row in recent.iterrows():
 
             if st.button(
                 "Delete log",
-                key=f"delete_{checkin_id}",
+                key=(
+                    f"delete_{checkin_id}"
+                ),
                 type="secondary",
             ):
 
@@ -1089,6 +1595,7 @@ for _, row in recent.iterrows():
                 "Its recommendation and feedback will also be removed."
             )
 
+
             confirm_col, cancel_col = (
                 st.columns(
                     2
@@ -1100,7 +1607,9 @@ for _, row in recent.iterrows():
 
                 if st.button(
                     "Yes, delete",
-                    key=f"yes_{checkin_id}",
+                    key=(
+                        f"yes_{checkin_id}"
+                    ),
                     type="primary",
                     width="stretch",
                 ):
@@ -1110,10 +1619,12 @@ for _, row in recent.iterrows():
                         user_id=user_id,
                     )
 
+
                     st.session_state.pop(
                         delete_key,
                         None,
                     )
+
 
                     st.rerun()
 
@@ -1122,7 +1633,9 @@ for _, row in recent.iterrows():
 
                 if st.button(
                     "Cancel",
-                    key=f"cancel_{checkin_id}",
+                    key=(
+                        f"cancel_{checkin_id}"
+                    ),
                     width="stretch",
                 ):
 
@@ -1130,6 +1643,7 @@ for _, row in recent.iterrows():
                         delete_key,
                         None,
                     )
+
 
                     st.rerun()
 
@@ -1144,6 +1658,7 @@ divider()
 section_heading(
     "Missed a day?"
 )
+
 
 st.write(
     "Add a check-in for a previous date to keep your "
@@ -1175,7 +1690,9 @@ today_exists = (
     in set(
         checkins[
             "checkin_date"
-        ].astype(str)
+        ].astype(
+            str
+        )
     )
 )
 
@@ -1190,6 +1707,7 @@ if today_exists:
     st.write(
         "You've already completed today's check-in."
     )
+
 
     if st.button(
         "Edit today's check-in",
@@ -1208,6 +1726,7 @@ else:
     st.write(
         "You haven't completed today's check-in yet."
     )
+
 
     if st.button(
         "Complete today's check-in",
@@ -1234,21 +1753,30 @@ with st.expander(
 
     st.write(
         """
-        NudgeWise is a research prototype exploring
-        personalised digital wellbeing recommendations.
+        NudgeWise is a research prototype exploring personalised
+        digital wellbeing recommendations.
 
-        The wellbeing indicator is a product-level research
-        measure derived from self-reported check-in data.
-        It is not a medical or clinical assessment.
+        The wellbeing indicator summarises six self-reported dimensions:
+        sleep, stress, mood, energy, physical activity and perceived
+        connectedness. It is a product-level research measure, not a
+        medical or clinical assessment.
 
-        Model probabilities describe the relative preferences
-        produced by the NudgeWise classifier and are not
+        Recreational screen time is displayed and used by the AI, but
+        it is not directly converted into a wellbeing-score penalty
+        because NudgeWise does not assume one universal evidence-backed
+        harmful screen-time threshold.
+
+        Model probabilities describe the relative preferences learned
+        from the NudgeWise synthetic decision model. They are not
         probabilities that an intervention will improve wellbeing.
 
-        Retrospective check-ins are labelled separately because
-        they are based on recalled rather than same-day responses.
+        The model's local explanations describe sensitivity to input
+        changes. They should not be interpreted as causal effects.
 
-        Editing or deleting a check-in may also update or remove
-        its associated recommendation and feedback.
+        Retrospective check-ins are labelled separately because they
+        rely on recalled rather than same-day responses.
+
+        Editing or deleting a check-in may also update or remove its
+        associated recommendation and feedback.
         """
     )

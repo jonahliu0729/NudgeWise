@@ -1,17 +1,26 @@
 """
 database.py
 
-Persistent SQLite storage for NudgeWise Version 2.
+Persistent SQLite storage for NudgeWise Version 2.6.
 
 Supports:
 - authenticated participants
 - one check-in per participant per calendar day
 - live and retrospective check-ins
-- editing check-ins
-- deleting check-ins
+- physical activity minutes
+- perceived connectedness
+- backward compatibility with the legacy social variable
+- editing and deleting check-ins
 - AI predictions
 - recommendation feedback
 - usability feedback
+
+Migration strategy:
+- existing databases are preserved
+- activity_minutes is added if missing
+- connectedness is added if missing
+- historical social categories are mapped approximately to
+  connectedness values for backward compatibility
 """
 
 from __future__ import annotations
@@ -63,7 +72,7 @@ def connect_db() -> sqlite3.Connection:
 
 
 # ============================================================
-# Schema helper
+# Schema helpers
 # ============================================================
 
 def _column_exists(
@@ -82,6 +91,38 @@ def _column_exists(
     }
 
     return column in columns
+
+
+# ============================================================
+# Connectedness compatibility
+# ============================================================
+
+def connectedness_to_social(
+    connectedness: int,
+) -> str:
+    """
+    Convert the new 1-5 connectedness measure into the old
+    Low / Medium / High representation.
+
+    This exists only to keep the v2.5 model operational during
+    the v2.6 migration.
+    """
+
+    value = max(
+        1,
+        min(
+            5,
+            int(connectedness),
+        ),
+    )
+
+    if value <= 2:
+        return "Low"
+
+    if value == 3:
+        return "Medium"
+
+    return "High"
 
 
 # ============================================================
@@ -177,8 +218,11 @@ def create_tables() -> None:
             energy INTEGER,
 
             screen_time REAL,
+            activity_minutes INTEGER,
 
             activity TEXT,
+
+            connectedness INTEGER,
             social TEXT,
 
             hour INTEGER,
@@ -187,6 +231,10 @@ def create_tables() -> None:
         )
         """
     )
+
+    # --------------------------------------------------------
+    # Date
+    # --------------------------------------------------------
 
     if not _column_exists(
         cursor,
@@ -208,6 +256,10 @@ def create_tables() -> None:
             """
         )
 
+    # --------------------------------------------------------
+    # Entry type
+    # --------------------------------------------------------
+
     if not _column_exists(
         cursor,
         "checkins",
@@ -228,6 +280,69 @@ def create_tables() -> None:
             WHERE entry_type IS NULL
             """
         )
+
+    # --------------------------------------------------------
+    # Physical activity migration
+    # --------------------------------------------------------
+
+    if not _column_exists(
+        cursor,
+        "checkins",
+        "activity_minutes",
+    ):
+        cursor.execute(
+            """
+            ALTER TABLE checkins
+            ADD COLUMN activity_minutes INTEGER
+            DEFAULT 0
+            """
+        )
+
+        cursor.execute(
+            """
+            UPDATE checkins
+            SET activity_minutes = 0
+            WHERE activity_minutes IS NULL
+            """
+        )
+
+    # --------------------------------------------------------
+    # Connectedness migration
+    # --------------------------------------------------------
+
+    if not _column_exists(
+        cursor,
+        "checkins",
+        "connectedness",
+    ):
+        cursor.execute(
+            """
+            ALTER TABLE checkins
+            ADD COLUMN connectedness INTEGER
+            """
+        )
+
+    # Historical approximation only.
+    #
+    # Low    -> 2
+    # Medium -> 3
+    # High   -> 4
+
+    cursor.execute(
+        """
+        UPDATE checkins
+
+        SET connectedness =
+            CASE social
+                WHEN 'Low' THEN 2
+                WHEN 'Medium' THEN 3
+                WHEN 'High' THEN 4
+                ELSE 3
+            END
+
+        WHERE connectedness IS NULL
+        """
+    )
 
     cursor.execute(
         """
@@ -602,8 +717,9 @@ def save_checkin(
     mood: int,
     energy: int,
     screen_time: float,
+    activity_minutes: int,
     activity: str,
-    social: str,
+    connectedness: int,
     hour: int,
     checkin_date: str,
     entry_type: str = "live",
@@ -626,15 +742,27 @@ def save_checkin(
         ),
     )
 
-    existing = cursor.fetchone()
-
-    if existing is not None:
+    if cursor.fetchone() is not None:
 
         connection.close()
 
         raise DuplicateCheckinError(
             "A check-in already exists for this date."
         )
+
+    connectedness = max(
+        1,
+        min(
+            5,
+            int(connectedness),
+        ),
+    )
+
+    legacy_social = (
+        connectedness_to_social(
+            connectedness
+        )
+    )
 
     cursor.execute(
         """
@@ -645,13 +773,15 @@ def save_checkin(
             mood,
             energy,
             screen_time,
+            activity_minutes,
             activity,
+            connectedness,
             social,
             hour,
             checkin_date,
             entry_type
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             user_id,
@@ -660,8 +790,10 @@ def save_checkin(
             mood,
             energy,
             screen_time,
+            int(activity_minutes),
             activity,
-            social,
+            connectedness,
+            legacy_social,
             hour,
             checkin_date,
             entry_type,
@@ -677,7 +809,7 @@ def save_checkin(
 
 
 # ============================================================
-# Update / delete
+# Update check-in
 # ============================================================
 
 def update_checkin(
@@ -688,10 +820,25 @@ def update_checkin(
     mood: int,
     energy: int,
     screen_time: float,
+    activity_minutes: int,
     activity: str,
-    social: str,
+    connectedness: int,
     hour: int,
 ) -> bool:
+
+    connectedness = max(
+        1,
+        min(
+            5,
+            int(connectedness),
+        ),
+    )
+
+    legacy_social = (
+        connectedness_to_social(
+            connectedness
+        )
+    )
 
     connection = connect_db()
     cursor = connection.cursor()
@@ -699,15 +846,19 @@ def update_checkin(
     cursor.execute(
         """
         UPDATE checkins
+
         SET
             sleep = ?,
             stress = ?,
             mood = ?,
             energy = ?,
             screen_time = ?,
+            activity_minutes = ?,
             activity = ?,
+            connectedness = ?,
             social = ?,
             hour = ?
+
         WHERE id = ?
           AND user_id = ?
         """,
@@ -717,8 +868,10 @@ def update_checkin(
             mood,
             energy,
             screen_time,
+            int(activity_minutes),
             activity,
-            social,
+            connectedness,
+            legacy_social,
             hour,
             checkin_id,
             user_id,
@@ -734,6 +887,10 @@ def update_checkin(
 
     return updated
 
+
+# ============================================================
+# Delete check-in
+# ============================================================
 
 def delete_checkin(
     checkin_id: int,
@@ -825,17 +982,23 @@ def get_recent_checkins(
             mood,
             energy,
             screen_time,
+            activity_minutes,
             activity,
+            connectedness,
             social,
             hour,
             checkin_date,
             entry_type,
             created_at
+
         FROM checkins
+
         WHERE user_id = ?
+
         ORDER BY
             checkin_date DESC,
             created_at DESC
+
         LIMIT ?
         """,
         (
@@ -960,6 +1123,7 @@ def get_recent_predictions(
             predictions.predicted_nudge,
             predictions.confidence,
             predictions.created_at
+
         FROM predictions
 
         INNER JOIN checkins

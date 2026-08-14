@@ -1,7 +1,7 @@
 """
 app.py
 
-NudgeWise Version 2
+NudgeWise Version 2.6
 Authenticated daily digital wellbeing check-in.
 
 Features:
@@ -10,6 +10,9 @@ Features:
 - edit today's check-in
 - regenerate recommendation after edits
 - persistent participant history
+- physical activity minutes
+- perceived connectedness
+- fully integrated v2.6 AI prediction interface
 """
 
 from __future__ import annotations
@@ -171,7 +174,10 @@ defaults = {
 for key, value in defaults.items():
 
     if key not in st.session_state:
-        st.session_state[key] = value
+
+        st.session_state[
+            key
+        ] = value
 
 
 # ============================================================
@@ -333,7 +339,9 @@ if participant is None:
 
 
 nickname = (
-    participant.get("nickname")
+    participant.get(
+        "nickname"
+    )
     or "Participant"
 )
 
@@ -397,11 +405,8 @@ if is_editing:
     st.write(
         f"Welcome back, {nickname}. "
         "You have already completed today's check-in. "
-        "You can update it below if something was entered incorrectly."
+        "You can correct or update your responses below."
     )
-
-    # Native Streamlit container:
-    # no HTML parsing problems.
 
     with st.container(
         border=True
@@ -416,7 +421,6 @@ if is_editing:
             "and regenerate your NudgeWise recommendation."
         )
 
-
 else:
 
     st.title(
@@ -425,8 +429,7 @@ else:
 
     st.write(
         f"Welcome back, {nickname}. "
-        "This short check-in helps NudgeWise understand "
-        "your current habits and context."
+        "Answer based on your current state and today's behaviour."
     )
 
 
@@ -434,37 +437,59 @@ st.divider()
 
 
 # ============================================================
-# Default / existing values
+# Prefill values
 # ============================================================
 
 if is_editing:
 
     default_sleep = float(
-        existing_checkin["sleep"]
+        existing_checkin[
+            "sleep"
+        ]
     )
 
     default_stress = int(
-        existing_checkin["stress"]
+        existing_checkin[
+            "stress"
+        ]
     )
 
     default_mood = int(
-        existing_checkin["mood"]
+        existing_checkin[
+            "mood"
+        ]
     )
 
     default_energy = int(
-        existing_checkin["energy"]
+        existing_checkin[
+            "energy"
+        ]
     )
 
     default_screen_time = float(
-        existing_checkin["screen_time"]
+        existing_checkin[
+            "screen_time"
+        ]
+    )
+
+    default_activity_minutes = int(
+        existing_checkin.get(
+            "activity_minutes",
+            0,
+        )
+    )
+
+    default_connectedness = int(
+        existing_checkin.get(
+            "connectedness",
+            3,
+        )
     )
 
     default_activity = (
-        existing_checkin["activity"]
-    )
-
-    default_social = (
-        existing_checkin["social"]
+        existing_checkin[
+            "activity"
+        ]
     )
 
 else:
@@ -474,8 +499,9 @@ else:
     default_mood = 3
     default_energy = 3
     default_screen_time = 3.0
+    default_activity_minutes = 30
+    default_connectedness = 3
     default_activity = "Phone"
-    default_social = "Medium"
 
 
 activity_options = [
@@ -487,19 +513,9 @@ activity_options = [
 ]
 
 
-social_options = [
-    "Low",
-    "Medium",
-    "High",
-]
-
-
 if default_activity not in activity_options:
+
     default_activity = "Phone"
-
-
-if default_social not in social_options:
-    default_social = "Medium"
 
 
 activity_index = (
@@ -508,24 +524,28 @@ activity_index = (
     )
 )
 
-social_index = (
-    social_options.index(
-        default_social
-    )
-)
-
 
 # ============================================================
-# Daily check-in form
+# Daily check-in
 # ============================================================
 
 with st.form(
     "daily_checkin"
 ):
 
+    # --------------------------------------------------------
+    # Current wellbeing
+    # --------------------------------------------------------
+
     st.subheader(
-        "How are you feeling?"
+        "How are you feeling right now?"
     )
+
+    st.caption(
+        "Use the same scale definitions each day so your "
+        "responses stay comparable."
+    )
+
 
     left, right = st.columns(
         2,
@@ -536,22 +556,32 @@ with st.form(
     with left:
 
         sleep = st.number_input(
-            "Sleep",
+            "Sleep in your last main sleep period (hours)",
             min_value=0.0,
             max_value=16.0,
             value=default_sleep,
             step=0.5,
             format="%.1f",
             help=(
-                "Approximate hours of sleep last night."
+                "Approximate total hours of sleep during "
+                "your most recent main sleep period."
             ),
         )
+
 
         mood = st.slider(
             "Mood",
             min_value=1,
             max_value=5,
             value=default_mood,
+            help=(
+                "1 = very low mood. "
+                "5 = very good mood."
+            ),
+        )
+
+        st.caption(
+            "1 = very low mood · 5 = very good mood"
         )
 
 
@@ -562,48 +592,115 @@ with st.form(
             min_value=1,
             max_value=5,
             value=default_stress,
+            help=(
+                "1 = very low stress. "
+                "5 = very high stress."
+            ),
         )
+
+        st.caption(
+            "1 = very low stress · 5 = very high stress"
+        )
+
 
         energy = st.slider(
             "Energy",
             min_value=1,
             max_value=5,
             value=default_energy,
+            help=(
+                "1 = very low energy. "
+                "5 = very high energy."
+            ),
+        )
+
+        st.caption(
+            "1 = very low energy · 5 = very high energy"
         )
 
 
     st.divider()
 
 
+    # --------------------------------------------------------
+    # Daily behaviour
+    # --------------------------------------------------------
+
     st.subheader(
-        "Your digital habits"
+        "Your daily habits"
     )
 
 
     screen_time = st.number_input(
-        "Recreational screen time",
+        "Recreational screen time today (hours)",
         min_value=0.0,
         max_value=24.0,
         value=default_screen_time,
         step=0.5,
         format="%.1f",
         help=(
-            "Approximate recreational screen time today."
+            "Include social media, gaming, streaming and "
+            "recreational browsing. Do not include screen use "
+            "required for schoolwork or work."
         ),
     )
 
 
-    activity = st.selectbox(
-        "Current activity",
-        activity_options,
-        index=activity_index,
+    activity_minutes = st.number_input(
+        "Moderate-to-vigorous physical activity today (minutes)",
+        min_value=0,
+        max_value=300,
+        value=default_activity_minutes,
+        step=10,
+        help=(
+            "Approximate minutes of activity that noticeably "
+            "raised your breathing or heart rate, such as sport, "
+            "running, brisk cycling or active training."
+        ),
+    )
+
+    st.caption(
+        "Enter minutes. For example, 60 = one hour."
     )
 
 
-    social = st.selectbox(
-        "Social interaction",
-        social_options,
-        index=social_index,
+    connectedness = st.slider(
+        "How connected to other people have you felt today?",
+        min_value=1,
+        max_value=5,
+        value=default_connectedness,
+        help=(
+            "Think about meaningful connection rather than "
+            "simply how many people you were around."
+        ),
+    )
+
+    st.caption(
+        "1 = not connected at all · 5 = very connected"
+    )
+
+
+    st.divider()
+
+
+    # --------------------------------------------------------
+    # Immediate context
+    # --------------------------------------------------------
+
+    st.subheader(
+        "Your current context"
+    )
+
+    st.caption(
+        "This helps NudgeWise judge whether a suggestion "
+        "makes sense right now. It is not a wellbeing score."
+    )
+
+
+    activity = st.selectbox(
+        "What are you mainly doing right now?",
+        activity_options,
+        index=activity_index,
     )
 
 
@@ -635,7 +732,7 @@ if submitted:
     try:
 
         # ----------------------------------------------------
-        # Prediction
+        # v2.6 AI prediction
         # ----------------------------------------------------
 
         prediction, confidence = (
@@ -645,9 +742,14 @@ if submitted:
                 mood=mood,
                 energy=energy,
                 screen_time=screen_time,
+                activity_minutes=int(
+                    activity_minutes
+                ),
+                connectedness=int(
+                    connectedness
+                ),
                 activity=activity,
                 day_type=day_type,
-                social=social,
                 hour=current_hour,
             )
         )
@@ -662,22 +764,30 @@ if submitted:
                 hour=current_hour,
                 energy=energy,
                 mood=mood,
+                activity_minutes=int(
+                    activity_minutes
+                ),
+                connectedness=int(
+                    connectedness
+                ),
                 activity=activity,
-                social=social,
                 day_type=day_type,
             )
         )
 
 
         # ----------------------------------------------------
-        # Edit today's record
+        # Edit today's check-in
         # ----------------------------------------------------
 
         if is_editing:
 
             checkin_id = int(
-                existing_checkin["id"]
+                existing_checkin[
+                    "id"
+                ]
             )
+
 
             updated = update_checkin(
                 checkin_id=checkin_id,
@@ -687,10 +797,16 @@ if submitted:
                 mood=mood,
                 energy=energy,
                 screen_time=screen_time,
+                activity_minutes=int(
+                    activity_minutes
+                ),
                 activity=activity,
-                social=social,
+                connectedness=int(
+                    connectedness
+                ),
                 hour=current_hour,
             )
+
 
             if not updated:
 
@@ -699,6 +815,7 @@ if submitted:
                 )
 
                 st.stop()
+
 
             prediction_id = (
                 replace_prediction(
@@ -710,7 +827,7 @@ if submitted:
 
 
         # ----------------------------------------------------
-        # New record
+        # New check-in
         # ----------------------------------------------------
 
         else:
@@ -722,11 +839,18 @@ if submitted:
                 mood=mood,
                 energy=energy,
                 screen_time=screen_time,
+                activity_minutes=int(
+                    activity_minutes
+                ),
                 activity=activity,
-                social=social,
+                connectedness=int(
+                    connectedness
+                ),
                 hour=current_hour,
                 checkin_date=today_string,
+                entry_type="live",
             )
+
 
             prediction_id = (
                 save_prediction(
@@ -738,7 +862,7 @@ if submitted:
 
 
         # ----------------------------------------------------
-        # Session state
+        # Session
         # ----------------------------------------------------
 
         st.session_state.prediction = (
