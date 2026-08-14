@@ -4,12 +4,12 @@ app.py
 NudgeWise Version 2
 Authenticated daily digital wellbeing check-in.
 
-Key behaviour:
-- Google-authenticated participants
+Features:
+- Google authentication
 - one check-in per participant per NZ calendar day
-- existing daily check-ins can be edited
-- editing reruns the AI recommendation
-- edited recommendations replace the previous prediction
+- edit today's check-in
+- regenerate recommendation after edits
+- persistent participant history
 """
 
 from __future__ import annotations
@@ -59,14 +59,14 @@ NZ_TIMEZONE = ZoneInfo(
 
 
 # ============================================================
-# Page configuration
+# Page setup
 # ============================================================
 
 st.set_page_config(
     page_title="NudgeWise",
     page_icon=None,
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="locked",
 )
 
 
@@ -76,93 +76,72 @@ st.set_page_config(
 
 st.markdown(
     """
-    <style>
+<style>
 
-    .stApp {
-        background:#FAFAF8;
-        color:#20201F;
-    }
+.stApp {
+    background:#FAFAF8;
+    color:#20201F;
+}
 
-    [data-testid="stHeader"] {
-        background:transparent;
-    }
+[data-testid="stHeader"] {
+    background:transparent;
+}
 
-    [data-testid="stSidebar"] {
-        background:#F4F4F1;
-        border-right:1px solid #E5E5E0;
-    }
+[data-testid="stSidebar"] {
+    background:#F4F4F1;
+    border-right:1px solid #E5E5E0;
+}
 
-    .block-container {
-        max-width:1080px;
-        padding-top:3.4rem;
-        padding-bottom:5rem;
-    }
+.block-container {
+    max-width:1080px;
+    padding-top:3.4rem;
+    padding-bottom:5rem;
+}
 
-    h1 {
-        font-size:2.7rem !important;
-        font-weight:650 !important;
-        letter-spacing:-0.05em !important;
-        color:#171717 !important;
-    }
+h1 {
+    font-size:2.7rem !important;
+    font-weight:650 !important;
+    letter-spacing:-0.05em !important;
+    color:#171717 !important;
+}
 
-    h2 {
-        font-size:1.4rem !important;
-        font-weight:600 !important;
-        letter-spacing:-0.025em !important;
-    }
+h2 {
+    font-size:1.4rem !important;
+    font-weight:600 !important;
+    letter-spacing:-0.025em !important;
+}
 
-    h3 {
-        font-size:1.08rem !important;
-        font-weight:600 !important;
-    }
+h3 {
+    font-size:1.08rem !important;
+    font-weight:600 !important;
+}
 
-    p {
-        color:#696963;
-        line-height:1.6;
-    }
+p {
+    color:#696963;
+    line-height:1.6;
+}
 
-    hr {
-        border:none;
-        border-top:1px solid #E5E5E0;
-        margin:2.3rem 0;
-    }
+hr {
+    border:none;
+    border-top:1px solid #E5E5E0;
+    margin:2.3rem 0;
+}
 
-    [data-testid="stForm"] {
-        border:none !important;
-        padding:0 !important;
-        background:transparent !important;
-    }
+[data-testid="stForm"] {
+    border:none !important;
+    padding:0 !important;
+    background:transparent !important;
+}
 
-    .stButton > button,
-    .stFormSubmitButton > button {
-        min-height:3rem;
-        border-radius:11px !important;
-        font-weight:600 !important;
-    }
+.stButton > button,
+.stFormSubmitButton > button {
+    min-height:3rem;
+    border-radius:11px !important;
+    font-weight:600 !important;
+}
 
-    .daily-status {
-        background:#F4F4F1;
-        border:1px solid #E5E5E0;
-        border-radius:14px;
-        padding:1rem 1.15rem;
-        margin:0.8rem 0 1.6rem 0;
-    }
-
-    .daily-status-title {
-        color:#30302E;
-        font-size:0.88rem;
-        font-weight:600;
-        margin-bottom:0.25rem;
-    }
-
-    .daily-status-text {
-        color:#777771;
-        font-size:0.82rem;
-        line-height:1.5;
-    }
-
-    </style>
-    """,
+</style>
+""",
     unsafe_allow_html=True,
 )
 
@@ -188,13 +167,11 @@ defaults = {
     "feedback_submitted": False,
 }
 
+
 for key, value in defaults.items():
 
     if key not in st.session_state:
-
-        st.session_state[
-            key
-        ] = value
+        st.session_state[key] = value
 
 
 # ============================================================
@@ -250,7 +227,7 @@ participant = (
 
 
 # ============================================================
-# First-time authenticated participant
+# First-time participant
 # ============================================================
 
 if participant is None:
@@ -345,6 +322,7 @@ participant = get_user(
     st.session_state.user_id
 )
 
+
 if participant is None:
 
     st.error(
@@ -355,28 +333,26 @@ if participant is None:
 
 
 nickname = (
-    participant.get(
-        "nickname"
-    )
+    participant.get("nickname")
     or "Participant"
 )
 
 
 # ============================================================
-# Current NZ date and time
+# NZ date / time
 # ============================================================
 
 now = datetime.now(
     NZ_TIMEZONE
 )
 
-today_date = now.date()
-
 today_string = (
-    today_date.isoformat()
+    now.date().isoformat()
 )
 
-current_hour = now.hour
+current_hour = (
+    now.hour
+)
 
 day_type = (
     "Weekend"
@@ -411,6 +387,7 @@ st.caption(
     )
 )
 
+
 if is_editing:
 
     st.title(
@@ -423,20 +400,22 @@ if is_editing:
         "You can update it below if something was entered incorrectly."
     )
 
-    st.markdown(
-        """
-        <div class="daily-status">
-            <div class="daily-status-title">
-                Today's check-in is already recorded
-            </div>
-            <div class="daily-status-text">
-                Saving changes will update today's record and
-                regenerate your NudgeWise recommendation.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # Native Streamlit container:
+    # no HTML parsing problems.
+
+    with st.container(
+        border=True
+    ):
+
+        st.markdown(
+            "**Today's check-in is already recorded**"
+        )
+
+        st.write(
+            "Saving changes will update today's record "
+            "and regenerate your NudgeWise recommendation."
+        )
+
 
 else:
 
@@ -455,7 +434,7 @@ st.divider()
 
 
 # ============================================================
-# Prefill values
+# Default / existing values
 # ============================================================
 
 if is_editing:
@@ -507,6 +486,7 @@ activity_options = [
     "Exercise",
 ]
 
+
 social_options = [
     "Low",
     "Medium",
@@ -515,12 +495,10 @@ social_options = [
 
 
 if default_activity not in activity_options:
-
     default_activity = "Phone"
 
 
 if default_social not in social_options:
-
     default_social = "Medium"
 
 
@@ -554,6 +532,7 @@ with st.form(
         gap="large",
     )
 
+
     with left:
 
         sleep = st.number_input(
@@ -564,8 +543,7 @@ with st.form(
             step=0.5,
             format="%.1f",
             help=(
-                "Approximate hours "
-                "of sleep last night."
+                "Approximate hours of sleep last night."
             ),
         )
 
@@ -575,6 +553,7 @@ with st.form(
             max_value=5,
             value=default_mood,
         )
+
 
     with right:
 
@@ -592,11 +571,14 @@ with st.form(
             value=default_energy,
         )
 
+
     st.divider()
+
 
     st.subheader(
         "Your digital habits"
     )
+
 
     screen_time = st.number_input(
         "Recreational screen time",
@@ -606,10 +588,10 @@ with st.form(
         step=0.5,
         format="%.1f",
         help=(
-            "Approximate recreational screen "
-            "time today."
+            "Approximate recreational screen time today."
         ),
     )
+
 
     activity = st.selectbox(
         "Current activity",
@@ -617,19 +599,23 @@ with st.form(
         index=activity_index,
     )
 
+
     social = st.selectbox(
         "Social interaction",
         social_options,
         index=social_index,
     )
 
+
     st.divider()
+
 
     submit_label = (
         "Save changes"
         if is_editing
         else "Generate personalised guidance"
     )
+
 
     submitted = (
         st.form_submit_button(
@@ -641,7 +627,7 @@ with st.form(
 
 
 # ============================================================
-# Process form
+# Process submission
 # ============================================================
 
 if submitted:
@@ -649,7 +635,7 @@ if submitted:
     try:
 
         # ----------------------------------------------------
-        # Run NudgeWise AI v2.5
+        # Prediction
         # ----------------------------------------------------
 
         prediction, confidence = (
@@ -666,6 +652,7 @@ if submitted:
             )
         )
 
+
         reasons = (
             explain_prediction(
                 prediction=prediction,
@@ -675,11 +662,15 @@ if submitted:
                 hour=current_hour,
                 energy=energy,
                 mood=mood,
+                activity=activity,
+                social=social,
+                day_type=day_type,
             )
         )
 
+
         # ----------------------------------------------------
-        # Edit existing daily log
+        # Edit today's record
         # ----------------------------------------------------
 
         if is_editing:
@@ -688,28 +679,23 @@ if submitted:
                 existing_checkin["id"]
             )
 
-            updated = (
-                update_checkin(
-                    checkin_id=checkin_id,
-                    user_id=(
-                        st.session_state.user_id
-                    ),
-                    sleep=sleep,
-                    stress=stress,
-                    mood=mood,
-                    energy=energy,
-                    screen_time=screen_time,
-                    activity=activity,
-                    social=social,
-                    hour=current_hour,
-                )
+            updated = update_checkin(
+                checkin_id=checkin_id,
+                user_id=st.session_state.user_id,
+                sleep=sleep,
+                stress=stress,
+                mood=mood,
+                energy=energy,
+                screen_time=screen_time,
+                activity=activity,
+                social=social,
+                hour=current_hour,
             )
 
             if not updated:
 
                 st.error(
-                    "NudgeWise could not update "
-                    "today's check-in."
+                    "NudgeWise could not update today's check-in."
                 )
 
                 st.stop()
@@ -722,16 +708,15 @@ if submitted:
                 )
             )
 
+
         # ----------------------------------------------------
-        # Create new daily log
+        # New record
         # ----------------------------------------------------
 
         else:
 
             checkin_id = save_checkin(
-                user_id=(
-                    st.session_state.user_id
-                ),
+                user_id=st.session_state.user_id,
                 sleep=sleep,
                 stress=stress,
                 mood=mood,
@@ -751,8 +736,9 @@ if submitted:
                 )
             )
 
+
         # ----------------------------------------------------
-        # Session
+        # Session state
         # ----------------------------------------------------
 
         st.session_state.prediction = (
@@ -779,9 +765,6 @@ if submitted:
             False
         )
 
-        # ----------------------------------------------------
-        # Dashboard
-        # ----------------------------------------------------
 
         st.switch_page(
             "pages/dashboard.py"
@@ -789,9 +772,6 @@ if submitted:
 
 
     except DuplicateCheckinError:
-
-        # This protects against duplicate writes even if two
-        # browser submissions happen close together.
 
         st.warning(
             "Today's check-in already exists. "
@@ -802,8 +782,7 @@ if submitted:
     except Exception as error:
 
         st.error(
-            "NudgeWise could not save "
-            "your check-in."
+            "NudgeWise could not save your check-in."
         )
 
         st.exception(

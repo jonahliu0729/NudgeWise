@@ -1,0 +1,16 @@
+{
+  "rows": 20000,
+  "mean_top_probability": 0.4474386292726849,
+  "median_top_probability": 0.421118964288584,
+  "minimum_top_probability": 0.19216273304702855,
+  "maximum_top_probability": 0.9034569269378218,
+  "mean_probability_margin": 0.22540668853446144,
+  "mean_normalised_entropy": 0.7890253633308622,
+  "top1_agreement": 0.99065,
+  "mean_probability_mae": 0.0025750472369381236,
+  "dominant_class": "Take a short break",
+  "dominant_class_percentage": 0.3624,
+  "low_certainty_percentage": 0.557,
+  "moderate_certainty_percentage": 0.2123,
+  "high_certainty_percentage": 0.2307
+}

@@ -2,23 +2,23 @@
 pages/feedback.py
 
 NudgeWise Version 2
-Usability feedback page.
-
-This page evaluates the product experience separately from
-feedback about individual AI recommendations.
+Independent usability feedback page.
 """
 
 from __future__ import annotations
 
 import streamlit as st
 
-from components.navigation import (
-    render_sidebar,
-)
-
 from components.theme import (
     apply_theme,
     configure_page,
+)
+
+configure_page()
+apply_theme()
+
+from components.navigation import (
+    render_sidebar,
 )
 
 from database import (
@@ -34,19 +34,15 @@ from services.auth import (
 
 
 # ============================================================
-# Page setup
+# Setup
 # ============================================================
 
-configure_page()
-apply_theme()
-
 create_tables()
-
 render_sidebar()
 
 
 # ============================================================
-# Authentication guard
+# Authentication
 # ============================================================
 
 if not is_logged_in():
@@ -60,6 +56,7 @@ participant = (
     ensure_current_participant()
 )
 
+
 if participant is None:
 
     st.switch_page(
@@ -67,13 +64,10 @@ if participant is None:
     )
 
 
-# ============================================================
-# Participant
-# ============================================================
-
 user_id = st.session_state.get(
     "user_id"
 )
+
 
 if user_id is None:
 
@@ -86,6 +80,7 @@ participant = get_user(
     user_id
 )
 
+
 if participant is None:
 
     st.switch_page(
@@ -94,15 +89,13 @@ if participant is None:
 
 
 nickname = (
-    participant.get(
-        "nickname"
-    )
+    participant.get("nickname")
     or "Participant"
 )
 
 
 # ============================================================
-# Header
+# Page
 # ============================================================
 
 st.caption(
@@ -116,26 +109,25 @@ st.title(
 st.write(
     f"Thanks for testing NudgeWise, {nickname}. "
     "This feedback is about the app itself rather than "
-    "any individual recommendation."
+    "an individual AI recommendation."
 )
 
 st.divider()
 
 
 # ============================================================
-# Feedback state
+# Submission state
 # ============================================================
 
-if "usability_feedback_submitted" not in st.session_state:
+if (
+    "usability_feedback_submitted"
+    not in st.session_state
+):
 
     st.session_state[
         "usability_feedback_submitted"
     ] = False
 
-
-# ============================================================
-# Submitted state
-# ============================================================
 
 if st.session_state[
     "usability_feedback_submitted"
@@ -146,7 +138,7 @@ if st.session_state[
     )
 
     st.write(
-        "This information will help evaluate and improve "
+        "Your response will help evaluate and improve "
         "the NudgeWise user experience."
     )
 
@@ -176,15 +168,12 @@ with st.form(
         "Overall experience"
     )
 
+
     ease_of_use = st.slider(
         "How easy was NudgeWise to use?",
         min_value=1,
         max_value=5,
         value=3,
-        help=(
-            "1 = very difficult to use, "
-            "5 = very easy to use"
-        ),
     )
 
 
@@ -193,10 +182,6 @@ with st.form(
         min_value=1,
         max_value=5,
         value=3,
-        help=(
-            "Consider navigation, wording, layout "
-            "and how easy information was to understand."
-        ),
     )
 
 
@@ -205,10 +190,6 @@ with st.form(
         min_value=1,
         max_value=5,
         value=3,
-        help=(
-            "This refers to your impression of the app, "
-            "not whether every recommendation was correct."
-        ),
     )
 
 
@@ -223,8 +204,8 @@ with st.form(
     confusing = st.text_area(
         "Was anything confusing?",
         placeholder=(
-            "For example: navigation, wording, graphs, "
-            "recommendations, login..."
+            "Navigation, wording, graphs, login, "
+            "recommendations..."
         ),
         max_chars=750,
     )
@@ -279,9 +260,11 @@ if submitted:
         ),
     )
 
+
     st.session_state[
         "usability_feedback_submitted"
     ] = True
+
 
     st.rerun()
 
@@ -292,19 +275,18 @@ if submitted:
 
 st.divider()
 
+
 with st.expander(
     "Why NudgeWise collects this feedback"
 ):
 
     st.write(
         """
-        NudgeWise collects usability feedback separately from
-        recommendation feedback so the research can distinguish
-        between the quality of the AI guidance and the quality
-        of the app experience.
+        Usability feedback is stored separately from feedback
+        about individual AI recommendations.
 
-        Responses can be used to identify confusing interface
-        elements, evaluate perceived usability and trust, and
-        guide future development.
+        This allows the research to distinguish between
+        perceptions of the AI model and perceptions of the
+        user interface.
         """
     )

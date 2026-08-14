@@ -5,7 +5,8 @@ Persistent SQLite storage for NudgeWise Version 2.
 
 Supports:
 - authenticated participants
-- one daily check-in per participant
+- one check-in per participant per calendar day
+- live and retrospective check-ins
 - editing check-ins
 - deleting check-ins
 - AI predictions
@@ -35,11 +36,11 @@ DATABASE_PATH = DATABASE_FOLDER / "nudge.db"
 
 
 # ============================================================
-# Custom errors
+# Errors
 # ============================================================
 
 class DuplicateCheckinError(Exception):
-    """Raised when a participant already has a log for that date."""
+    """Raised when a participant already has a log for a date."""
 
 
 # ============================================================
@@ -207,6 +208,27 @@ def create_tables() -> None:
             """
         )
 
+    if not _column_exists(
+        cursor,
+        "checkins",
+        "entry_type",
+    ):
+        cursor.execute(
+            """
+            ALTER TABLE checkins
+            ADD COLUMN entry_type TEXT
+            DEFAULT 'live'
+            """
+        )
+
+        cursor.execute(
+            """
+            UPDATE checkins
+            SET entry_type = 'live'
+            WHERE entry_type IS NULL
+            """
+        )
+
     cursor.execute(
         """
         CREATE INDEX IF NOT EXISTS
@@ -352,7 +374,7 @@ def _participant_code_exists(
 
 
 # ============================================================
-# Participant creation
+# Participant creation / retrieval
 # ============================================================
 
 def create_authenticated_participant(
@@ -420,10 +442,6 @@ def create_authenticated_participant(
         "auth_subject_hash": auth_subject_hash,
     }
 
-
-# ============================================================
-# Participant retrieval
-# ============================================================
 
 def get_user(
     user_id: int,
@@ -574,7 +592,7 @@ def get_checkin_by_id(
 
 
 # ============================================================
-# Save daily check-in
+# Save check-in
 # ============================================================
 
 def save_checkin(
@@ -588,6 +606,7 @@ def save_checkin(
     social: str,
     hour: int,
     checkin_date: str,
+    entry_type: str = "live",
 ) -> int:
 
     connection = connect_db()
@@ -629,9 +648,10 @@ def save_checkin(
             activity,
             social,
             hour,
-            checkin_date
+            checkin_date,
+            entry_type
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             user_id,
@@ -644,6 +664,7 @@ def save_checkin(
             social,
             hour,
             checkin_date,
+            entry_type,
         ),
     )
 
@@ -656,7 +677,7 @@ def save_checkin(
 
 
 # ============================================================
-# Edit check-in
+# Update / delete
 # ============================================================
 
 def update_checkin(
@@ -713,10 +734,6 @@ def update_checkin(
 
     return updated
 
-
-# ============================================================
-# Delete check-in
-# ============================================================
 
 def delete_checkin(
     checkin_id: int,
@@ -812,6 +829,7 @@ def get_recent_checkins(
             social,
             hour,
             checkin_date,
+            entry_type,
             created_at
         FROM checkins
         WHERE user_id = ?
@@ -997,15 +1015,7 @@ def get_feedback_for_prediction(
 
     cursor.execute(
         """
-        SELECT
-            id,
-            prediction_id,
-            accepted,
-            completed,
-            rating,
-            makes_sense,
-            comment,
-            created_at
+        SELECT *
         FROM feedback
         WHERE prediction_id = ?
         ORDER BY id DESC
@@ -1082,11 +1092,6 @@ def save_usability_feedback(
     confusing: str | None,
     improvement: str | None,
 ) -> None:
-    """
-    Save feedback about the NudgeWise product experience.
-
-    This is deliberately separate from recommendation feedback.
-    """
 
     connection = connect_db()
     cursor = connection.cursor()

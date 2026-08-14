@@ -2,17 +2,18 @@
 pages/dashboard.py
 
 NudgeWise Version 2
-Authenticated longitudinal wellbeing dashboard.
+Authenticated personal wellbeing dashboard.
 
 Features:
 - participant-specific data
-- latest wellbeing indicator
+- wellbeing indicator
 - latest AI recommendation
-- research-quality recommendation feedback
+- model certainty and alternatives
+- local explainability
+- recommendation feedback
 - longitudinal trends
 - recent check-in management
-- edit today's check-in
-- delete any check-in
+- retrospective/missed-day check-ins
 """
 
 from __future__ import annotations
@@ -22,6 +23,19 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
+
+from components.theme import (
+    apply_theme,
+    configure_page,
+)
+
+# ============================================================
+# Page configuration
+# ============================================================
+
+configure_page()
+apply_theme()
+
 
 from components.navigation import (
     render_sidebar,
@@ -42,11 +56,6 @@ from components.charts import (
     wellbeing_history_chart,
 )
 
-from components.theme import (
-    apply_theme,
-    configure_page,
-)
-
 from database import (
     create_tables,
     delete_checkin,
@@ -55,6 +64,10 @@ from database import (
     get_recent_checkins,
     get_user,
     save_feedback,
+)
+
+from predict import (
+    get_prediction_details,
 )
 
 from services.auth import (
@@ -73,19 +86,15 @@ NZ_TIMEZONE = ZoneInfo(
 
 
 # ============================================================
-# Page setup
+# Database + navigation
 # ============================================================
 
-configure_page()
-apply_theme()
-
 create_tables()
-
 render_sidebar()
 
 
 # ============================================================
-# Authentication
+# Authentication guard
 # ============================================================
 
 if not is_logged_in():
@@ -138,12 +147,8 @@ if participant is None:
 
 
 nickname = (
-    participant.get(
-        "nickname"
-    )
-    or participant.get(
-        "name"
-    )
+    participant.get("nickname")
+    or participant.get("name")
     or "Participant"
 )
 
@@ -157,13 +162,12 @@ now = datetime.now(
 )
 
 today_string = (
-    now.date()
-    .isoformat()
+    now.date().isoformat()
 )
 
 
 # ============================================================
-# Data
+# Load check-ins
 # ============================================================
 
 rows = get_recent_checkins(
@@ -198,6 +202,11 @@ def safe_number(
 def wellbeing_indicator(
     checkin: pd.Series,
 ) -> int:
+    """
+    Product-level wellbeing indicator.
+
+    Not a clinical measure.
+    """
 
     sleep = safe_number(
         checkin.get("sleep")
@@ -296,41 +305,29 @@ def build_history(
 
     history = dataframe.copy()
 
-    history[
-        "created_at"
-    ] = pd.to_datetime(
-        history["created_at"],
+    history["created_at"] = (
+        pd.to_datetime(
+            history["created_at"],
+            errors="coerce",
+        )
+    )
+
+    parsed_dates = pd.to_datetime(
+        history["checkin_date"],
         errors="coerce",
     )
 
-    if "checkin_date" in history.columns:
-
-        parsed_dates = pd.to_datetime(
-            history["checkin_date"],
-            errors="coerce",
-        )
-
-        history[
-            "date"
-        ] = parsed_dates.dt.strftime(
+    history["date"] = (
+        parsed_dates.dt.strftime(
             "%d %b"
         )
+    )
 
-    else:
-
-        history[
-            "date"
-        ] = history[
-            "created_at"
-        ].dt.strftime(
-            "%d %b"
+    history["score"] = (
+        history.apply(
+            wellbeing_indicator,
+            axis=1,
         )
-
-    history[
-        "score"
-    ] = history.apply(
-        wellbeing_indicator,
-        axis=1,
     )
 
     return history
@@ -376,6 +373,18 @@ if checkins.empty:
             "app.py"
         )
 
+    st.write("")
+
+    if st.button(
+        "Add a missed check-in",
+        width="stretch",
+        key="empty_add_missed",
+    ):
+
+        st.switch_page(
+            "pages/past_checkin.py"
+        )
+
     st.stop()
 
 
@@ -383,24 +392,18 @@ if checkins.empty:
 # Prepare data
 # ============================================================
 
-checkins[
-    "created_at"
-] = pd.to_datetime(
-    checkins["created_at"],
-    errors="coerce",
+checkins["created_at"] = (
+    pd.to_datetime(
+        checkins["created_at"],
+        errors="coerce",
+    )
 )
 
 
-if "checkin_date" not in checkins.columns:
+if "entry_type" not in checkins.columns:
 
-    checkins[
-        "checkin_date"
-    ] = (
-        checkins[
-            "created_at"
-        ]
-        .dt.date
-        .astype(str)
+    checkins["entry_type"] = (
+        "live"
     )
 
 
@@ -428,9 +431,7 @@ latest = (
 # ============================================================
 
 latest_date = pd.to_datetime(
-    latest.get(
-        "checkin_date"
-    ),
+    latest.get("checkin_date"),
     errors="coerce",
 )
 
@@ -476,13 +477,13 @@ score = wellbeing_indicator(
     latest
 )
 
-description = wellbeing_description(
-    score
-)
-
 wellbeing_score(
     score=score,
-    description=description,
+    description=(
+        wellbeing_description(
+            score
+        )
+    ),
 )
 
 
@@ -490,46 +491,29 @@ wellbeing_score(
 # Current metrics
 # ============================================================
 
-sleep = safe_number(
-    latest.get("sleep")
-)
-
-screen_time = safe_number(
-    latest.get("screen_time")
-)
-
-mood = safe_number(
-    latest.get("mood")
-)
-
-energy = safe_number(
-    latest.get("energy")
-)
-
-
 metric_row(
     [
         (
             "Sleep",
-            f"{sleep:.1f} h",
+            f"{safe_number(latest.get('sleep')):.1f} h",
             "latest check-in",
         ),
 
         (
             "Screen time",
-            f"{screen_time:.1f} h",
+            f"{safe_number(latest.get('screen_time')):.1f} h",
             "recreational",
         ),
 
         (
             "Mood",
-            f"{mood:.0f} / 5",
+            f"{safe_number(latest.get('mood')):.0f} / 5",
             "self-reported",
         ),
 
         (
             "Energy",
-            f"{energy:.0f} / 5",
+            f"{safe_number(latest.get('energy')):.0f} / 5",
             "self-reported",
         ),
     ]
@@ -540,7 +524,7 @@ divider()
 
 
 # ============================================================
-# Latest AI recommendation
+# AI recommendation
 # ============================================================
 
 section_heading(
@@ -548,47 +532,197 @@ section_heading(
 )
 
 
-prediction = get_latest_prediction(
-    user_id
+prediction_record = (
+    get_latest_prediction(
+        user_id
+    )
 )
 
 
-if prediction:
+current_day_type = (
+    "Weekend"
+    if now.weekday() >= 5
+    else "Weekday"
+)
 
-    confidence = safe_number(
-        prediction.get(
-            "confidence"
+
+ai_details = get_prediction_details(
+    sleep=safe_number(
+        latest.get("sleep")
+    ),
+    stress=int(
+        safe_number(
+            latest.get("stress")
         )
+    ),
+    mood=int(
+        safe_number(
+            latest.get("mood")
+        )
+    ),
+    energy=int(
+        safe_number(
+            latest.get("energy")
+        )
+    ),
+    screen_time=safe_number(
+        latest.get("screen_time")
+    ),
+    activity=str(
+        latest.get(
+            "activity",
+            "Relaxing",
+        )
+    ),
+    day_type=current_day_type,
+    social=str(
+        latest.get(
+            "social",
+            "Medium",
+        )
+    ),
+    hour=int(
+        safe_number(
+            latest.get("hour"),
+            now.hour,
+        )
+    ),
+)
+
+
+recommendation(
+    title=ai_details["prediction"],
+    explanation=(
+        "NudgeWise selected this option from six "
+        "possible digital wellbeing interventions."
+    ),
+    confidence=(
+        f"{ai_details['confidence']:.0%}"
+    ),
+    certainty=(
+        ai_details["certainty"]
+    ),
+)
+
+
+# ============================================================
+# Certainty + alternative
+# ============================================================
+
+certainty_col, alternative_col = (
+    st.columns(
+        2,
+        gap="large",
+    )
+)
+
+
+with certainty_col:
+
+    st.caption(
+        "MODEL CERTAINTY"
     )
 
-    confidence_display = (
-        f"{confidence:.0%}"
-        if confidence <= 1
-        else f"{confidence:.0f}%"
+    st.markdown(
+        f"### {ai_details['certainty']}"
     )
 
-    recommendation(
-        title=str(
-            prediction.get(
-                "predicted_nudge",
-                "Personalised guidance",
+    st.caption(
+        "This reflects how strongly the model "
+        "separates its preferred option from alternatives."
+    )
+
+
+with alternative_col:
+
+    st.caption(
+        "NEXT MOST LIKELY"
+    )
+
+    alternative = (
+        ai_details["alternative"]
+    )
+
+    if alternative:
+
+        st.markdown(
+            f"### {alternative[0]}"
+        )
+
+        st.caption(
+            f"Model probability: "
+            f"{alternative[1]:.0%}"
+        )
+
+    else:
+
+        st.markdown(
+            "### No alternative"
+        )
+
+
+# ============================================================
+# Explainability
+# ============================================================
+
+st.write("")
+
+section_heading(
+    "Why NudgeWise suggested this",
+    (
+        "These statements describe which inputs most "
+        "influenced this model output. They do not imply causation."
+    ),
+)
+
+
+for reason in ai_details[
+    "reasons"
+]:
+
+    st.write(
+        f"• {reason}"
+    )
+
+
+# ============================================================
+# Full probability distribution
+# ============================================================
+
+with st.expander(
+    "See all recommendation probabilities"
+):
+
+    for (
+        recommendation_name,
+        probability,
+    ) in ai_details[
+        "ordered_probabilities"
+    ]:
+
+        st.write(
+            recommendation_name
+        )
+
+        st.progress(
+            float(
+                max(
+                    0.0,
+                    min(
+                        1.0,
+                        probability,
+                    ),
+                )
             )
-        ),
-        explanation=(
-            "Based on the behavioural pattern "
-            "in your latest check-in."
-        ),
-        confidence=confidence_display,
-    )
+        )
 
-else:
+        st.caption(
+            f"{probability:.1%}"
+        )
 
-    empty_state(
-        "No recommendation yet.",
-        (
-            "Complete a daily check-in "
-            "to generate personalised guidance."
-        ),
+    st.caption(
+        "These values are model preference probabilities, "
+        "not probabilities that an intervention will work."
     )
 
 
@@ -596,22 +730,21 @@ else:
 # Recommendation feedback
 # ============================================================
 
-if prediction:
+if prediction_record:
 
     st.write("")
 
     section_heading(
         "How was this recommendation?",
         (
-            "Your feedback helps evaluate whether "
-            "NudgeWise recommendations are useful "
-            "and understandable."
+            "Your feedback helps evaluate whether NudgeWise "
+            "recommendations are useful and understandable."
         ),
     )
 
 
     prediction_id = int(
-        prediction["id"]
+        prediction_record["id"]
     )
 
 
@@ -629,59 +762,37 @@ if prediction:
             "for this recommendation."
         )
 
-        summary_col_1, summary_col_2 = (
+
+        feedback_col_1, feedback_col_2 = (
             st.columns(
                 2,
                 gap="large",
             )
         )
 
-        with summary_col_1:
+
+        with feedback_col_1:
 
             st.metric(
                 "Helpfulness",
-                (
-                    f"{existing_feedback['rating']} / 5"
-                ),
+                f"{existing_feedback['rating']} / 5",
             )
 
-        with summary_col_2:
 
-            makes_sense_value = (
+        with feedback_col_2:
+
+            sense_value = (
                 existing_feedback.get(
                     "makes_sense"
                 )
             )
 
-            if makes_sense_value is not None:
+            if sense_value is not None:
 
                 st.metric(
                     "Made sense",
-                    (
-                        f"{makes_sense_value} / 5"
-                    ),
+                    f"{sense_value} / 5",
                 )
-
-        completed_value = (
-            existing_feedback.get(
-                "completed"
-            )
-        )
-
-        completed_labels = {
-            0: "No",
-            1: "Partly",
-            2: "Yes",
-        }
-
-        if completed_value in completed_labels:
-
-            st.caption(
-                "Followed recommendation: "
-                + completed_labels[
-                    completed_value
-                ]
-            )
 
 
     else:
@@ -697,14 +808,12 @@ if prediction:
                 value=3,
             )
 
-
             makes_sense = st.slider(
                 "How much did this recommendation make sense?",
                 min_value=1,
                 max_value=5,
                 value=3,
             )
-
 
             followed = st.radio(
                 "Did you follow the recommendation?",
@@ -716,16 +825,10 @@ if prediction:
                 horizontal=True,
             )
 
-
             comment = st.text_area(
                 "Anything you would change? (optional)",
-                placeholder=(
-                    "For example: too generic, useful timing, "
-                    "not relevant, easy to follow..."
-                ),
                 max_chars=500,
             )
-
 
             feedback_submit = (
                 st.form_submit_button(
@@ -744,17 +847,13 @@ if prediction:
                 "Yes": 2,
             }
 
-
-            accepted = (
-                1
-                if helpfulness >= 3
-                else 0
-            )
-
-
             save_feedback(
                 prediction_id=prediction_id,
-                accepted=accepted,
+                accepted=(
+                    1
+                    if helpfulness >= 3
+                    else 0
+                ),
                 completed=(
                     completed_map[
                         followed
@@ -771,7 +870,6 @@ if prediction:
                     or None
                 ),
             )
-
 
             st.rerun()
 
@@ -837,8 +935,8 @@ divider()
 section_heading(
     "Recent check-ins",
     (
-        "Review your recent entries. Today's entry "
-        "can be edited, and any entry can be deleted."
+        "Review recent entries. Today's entry can be edited, "
+        "and any entry can be deleted."
     ),
 )
 
@@ -853,13 +951,8 @@ recent = (
         ascending=False,
     )
     .head(7)
-    .copy()
 )
 
-
-# ============================================================
-# Check-in cards
-# ============================================================
 
 for _, row in recent.iterrows():
 
@@ -871,6 +964,13 @@ for _, row in recent.iterrows():
         row.get(
             "checkin_date",
             "",
+        )
+    )
+
+    entry_type = str(
+        row.get(
+            "entry_type",
+            "live",
         )
     )
 
@@ -886,29 +986,20 @@ for _, row in recent.iterrows():
     )
 
 
-    if pd.isna(
-        parsed_date
-    ):
-
-        date_display = (
-            checkin_date
-            or "Recorded check-in"
+    date_display = (
+        parsed_date.strftime(
+            "%A, %d %B"
         )
-
-    else:
-
-        date_display = (
-            parsed_date.strftime(
-                "%A, %d %B"
-            )
-        )
+        if not pd.isna(parsed_date)
+        else checkin_date
+    )
 
 
     with st.container(
         border=True
     ):
 
-        heading_col, action_col = (
+        information_col, action_col = (
             st.columns(
                 [3.2, 1],
                 gap="large",
@@ -916,7 +1007,7 @@ for _, row in recent.iterrows():
         )
 
 
-        with heading_col:
+        with information_col:
 
             st.markdown(
                 f"### {date_display}"
@@ -925,37 +1016,27 @@ for _, row in recent.iterrows():
             st.caption(
                 (
                     f"Sleep {safe_number(row.get('sleep')):.1f} h"
-                    f"  ·  Screen {safe_number(row.get('screen_time')):.1f} h"
-                    f"  ·  Mood {safe_number(row.get('mood')):.0f}/5"
-                    f"  ·  Stress {safe_number(row.get('stress')):.0f}/5"
-                    f"  ·  Energy {safe_number(row.get('energy')):.0f}/5"
+                    f" · Screen {safe_number(row.get('screen_time')):.1f} h"
+                    f" · Mood {safe_number(row.get('mood')):.0f}/5"
+                    f" · Stress {safe_number(row.get('stress')):.0f}/5"
+                    f" · Energy {safe_number(row.get('energy')):.0f}/5"
                 )
             )
-
-
-            activity = str(
-                row.get(
-                    "activity",
-                    "",
-                )
-            )
-
-            social = str(
-                row.get(
-                    "social",
-                    "",
-                )
-            )
-
 
             st.caption(
-                f"{activity} · Social interaction: {social}"
+                (
+                    f"{row.get('activity', '')}"
+                    f" · Social interaction: "
+                    f"{row.get('social', '')}"
+                )
             )
 
+            if entry_type == "retrospective":
 
-        # ----------------------------------------------------
-        # Edit
-        # ----------------------------------------------------
+                st.caption(
+                    "Added retrospectively"
+                )
+
 
         with action_col:
 
@@ -978,17 +1059,13 @@ for _, row in recent.iterrows():
                 )
 
 
-        # ----------------------------------------------------
-        # Delete
-        # ----------------------------------------------------
-
-        delete_state_key = (
-            f"confirm_delete_{checkin_id}"
+        delete_key = (
+            f"delete_confirm_{checkin_id}"
         )
 
 
         if not st.session_state.get(
-            delete_state_key,
+            delete_key,
             False,
         ):
 
@@ -999,7 +1076,7 @@ for _, row in recent.iterrows():
             ):
 
                 st.session_state[
-                    delete_state_key
+                    delete_key
                 ] = True
 
                 st.rerun()
@@ -1009,15 +1086,12 @@ for _, row in recent.iterrows():
 
             st.warning(
                 "Delete this check-in permanently? "
-                "Its recommendation and feedback "
-                "will also be removed."
+                "Its recommendation and feedback will also be removed."
             )
-
 
             confirm_col, cancel_col = (
                 st.columns(
-                    2,
-                    gap="medium",
+                    2
                 )
             )
 
@@ -1026,40 +1100,22 @@ for _, row in recent.iterrows():
 
                 if st.button(
                     "Yes, delete",
-                    key=f"confirm_{checkin_id}",
+                    key=f"yes_{checkin_id}",
                     type="primary",
                     width="stretch",
                 ):
 
-                    deleted = (
-                        delete_checkin(
-                            checkin_id=checkin_id,
-                            user_id=user_id,
-                        )
+                    delete_checkin(
+                        checkin_id=checkin_id,
+                        user_id=user_id,
                     )
 
-
                     st.session_state.pop(
-                        delete_state_key,
+                        delete_key,
                         None,
                     )
 
-
-                    if deleted:
-
-                        st.session_state.prediction = None
-                        st.session_state.confidence = None
-                        st.session_state.prediction_id = None
-                        st.session_state.reasons = []
-
-                        st.rerun()
-
-                    else:
-
-                        st.error(
-                            "NudgeWise could not delete "
-                            "that check-in."
-                        )
+                    st.rerun()
 
 
             with cancel_col:
@@ -1070,9 +1126,10 @@ for _, row in recent.iterrows():
                     width="stretch",
                 ):
 
-                    st.session_state[
-                        delete_state_key
-                    ] = False
+                    st.session_state.pop(
+                        delete_key,
+                        None,
+                    )
 
                     st.rerun()
 
@@ -1081,7 +1138,36 @@ divider()
 
 
 # ============================================================
-# Today's check-in status
+# Missed-day entry
+# ============================================================
+
+section_heading(
+    "Missed a day?"
+)
+
+st.write(
+    "Add a check-in for a previous date to keep your "
+    "wellbeing history complete. Retrospective entries are "
+    "marked separately because they rely on recalled information."
+)
+
+
+if st.button(
+    "Add a missed check-in",
+    width="stretch",
+    key="add_missed_checkin",
+):
+
+    st.switch_page(
+        "pages/past_checkin.py"
+    )
+
+
+divider()
+
+
+# ============================================================
+# Today's check-in
 # ============================================================
 
 today_exists = (
@@ -1102,16 +1188,14 @@ section_heading(
 if today_exists:
 
     st.write(
-        "You've already completed today's check-in. "
-        "You can update it if something changes "
-        "or if you entered something incorrectly."
+        "You've already completed today's check-in."
     )
 
     if st.button(
         "Edit today's check-in",
         type="primary",
         width="stretch",
-        key="edit_today_bottom",
+        key="edit_today",
     ):
 
         st.switch_page(
@@ -1129,7 +1213,7 @@ else:
         "Complete today's check-in",
         type="primary",
         width="stretch",
-        key="complete_today_bottom",
+        key="complete_today",
     ):
 
         st.switch_page(
@@ -1157,19 +1241,14 @@ with st.expander(
         measure derived from self-reported check-in data.
         It is not a medical or clinical assessment.
 
-        Recommendation probability represents the model's
-        estimated preference among available NudgeWise
-        interventions. It is not model accuracy and does not
-        establish that an intervention will be effective.
+        Model probabilities describe the relative preferences
+        produced by the NudgeWise classifier and are not
+        probabilities that an intervention will improve wellbeing.
 
-        Recommendation feedback is collected to evaluate
-        perceived usefulness, relevance, and whether users
-        followed the suggested behaviour.
+        Retrospective check-ins are labelled separately because
+        they are based on recalled rather than same-day responses.
 
-        Editing today's check-in regenerates the recommendation
-        using the updated information.
-
-        Deleting a check-in also removes its associated AI
-        prediction and recommendation feedback.
+        Editing or deleting a check-in may also update or remove
+        its associated recommendation and feedback.
         """
     )

@@ -5,6 +5,14 @@ Reusable presentation components for NudgeWise.
 
 This version avoids large nested HTML blocks because Streamlit can
 sometimes display them as literal text when formatting becomes complex.
+
+Recommendation cards are uncertainty-aware:
+- Low certainty
+- Moderate certainty
+- High certainty
+
+The underlying model probability is preserved exactly as produced
+by the model.
 """
 
 from __future__ import annotations
@@ -179,6 +187,50 @@ def metric_row(
 
 
 # ============================================================
+# Recommendation certainty language
+# ============================================================
+
+def _certainty_message(
+    certainty: str | None,
+) -> str | None:
+    """
+    Convert a model certainty category into restrained,
+    user-facing language.
+
+    This does not change or inflate the model probability.
+    """
+
+    if not certainty:
+        return None
+
+    normalised = (
+        str(certainty)
+        .strip()
+        .lower()
+    )
+
+    if normalised == "low":
+        return (
+            "This is NudgeWise's leading suggestion, "
+            "although several options were plausible for this check-in."
+        )
+
+    if normalised == "moderate":
+        return (
+            "NudgeWise found a moderate preference for this suggestion "
+            "over the available alternatives."
+        )
+
+    if normalised == "high":
+        return (
+            "NudgeWise identified a relatively clear preference "
+            "for this suggestion."
+        )
+
+    return None
+
+
+# ============================================================
 # Recommendation
 # ============================================================
 
@@ -186,6 +238,7 @@ def recommendation(
     title: str,
     explanation: str,
     confidence: str | None = None,
+    certainty: str | None = None,
 ) -> None:
 
     with st.container(
@@ -205,10 +258,25 @@ def recommendation(
             explanation
         )
 
-        if confidence:
-            st.caption(
-                f"Model confidence: {confidence}"
+        certainty_text = (
+            _certainty_message(
+                certainty
             )
+        )
+
+        if certainty_text:
+
+            st.write(
+                certainty_text
+            )
+
+        if confidence:
+
+            st.caption(
+                f"Model probability: {confidence}"
+            )
+
+       
 
 
 # ============================================================
