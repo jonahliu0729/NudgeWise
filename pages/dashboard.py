@@ -4,28 +4,26 @@ pages/dashboard.py
 NudgeWise Version 2.8
 Authenticated personal wellbeing dashboard.
 
-Research architecture:
+Features:
 - participant-specific longitudinal data
 - NudgeWise wellbeing indicator
 - stored AI prediction snapshots
-- stored six-class probabilities
-- stored uncertainty metrics
-- stored contextual actions
+- full six-class probabilities
+- model uncertainty
+- contextual actions
 - recommendation feedback
 - longitudinal trends
-- check-in management
+- collapsible recent history
 - retrospective entries
+- check-in editing and deletion
 
 IMPORTANT
 ---------
-For predictions created under v2.8+, the dashboard displays the
-prediction snapshot STORED when the check-in was processed.
+Research-grade prediction records display the prediction snapshot
+stored when the check-in was processed.
 
-It does not silently replace historical recommendations with the
-output of a newer model or action engine.
-
-Older prediction records that predate research-grade logging are
-supported through a backwards-compatible reconstruction fallback.
+Historical recommendations are not silently replaced by newer
+model outputs.
 """
 
 from __future__ import annotations
@@ -124,7 +122,7 @@ PROBABILITY_FIELDS = {
 
 
 # ============================================================
-# Database + navigation
+# Setup
 # ============================================================
 
 create_tables()
@@ -133,7 +131,7 @@ render_sidebar()
 
 
 # ============================================================
-# Authentication guard
+# Authentication
 # ============================================================
 
 if not is_logged_in():
@@ -213,7 +211,7 @@ today_string = (
 
 
 # ============================================================
-# Load check-ins
+# Load data
 # ============================================================
 
 rows = get_recent_checkins(
@@ -248,6 +246,7 @@ def safe_number(
         return float(
             value
         )
+
 
     except (
         TypeError,
@@ -304,9 +303,9 @@ def stored_probability_distribution(
     prediction_record: dict | None,
 ) -> dict[str, float]:
     """
-    Reconstruct the six-class distribution stored in Supabase.
+    Read the stored six-class distribution.
 
-    Returns an empty dictionary for legacy prediction records.
+    Returns an empty dictionary for legacy records.
     """
 
     if not prediction_record:
@@ -338,6 +337,7 @@ def stored_probability_distribution(
                 value
             )
 
+
         except (
             TypeError,
             ValueError,
@@ -363,9 +363,6 @@ def stored_probability_distribution(
         return {}
 
 
-    # Small floating-point differences can occur after storage.
-    # Renormalise for display only.
-
     return {
         class_name:
             probability / total
@@ -381,10 +378,6 @@ def stored_probability_distribution(
 def has_research_snapshot(
     prediction_record: dict | None,
 ) -> bool:
-    """
-    Determine whether this prediction was logged using the
-    research-grade v2.8 schema.
-    """
 
     if not prediction_record:
 
@@ -420,17 +413,9 @@ def wellbeing_indicator(
     checkin: pd.Series,
 ) -> int:
     """
-    NudgeWise product-level wellbeing indicator.
+    Product-level NudgeWise wellbeing indicator.
 
     NOT a medical or clinical assessment.
-
-    Components:
-    - sleep
-    - stress
-    - mood
-    - energy
-    - physical activity
-    - connectedness
     """
 
     sleep = safe_number(
@@ -478,10 +463,6 @@ def wellbeing_indicator(
         3.0,
     )
 
-
-    # --------------------------------------------------------
-    # Components
-    # --------------------------------------------------------
 
     sleep_component = clamp(
         sleep / 8.0
@@ -591,7 +572,7 @@ def wellbeing_description(
 
 
 # ============================================================
-# History
+# History preparation
 # ============================================================
 
 def build_history(
@@ -706,7 +687,7 @@ if checkins.empty:
 
 
 # ============================================================
-# Prepare check-in data
+# Prepare data
 # ============================================================
 
 checkins[
@@ -790,6 +771,7 @@ if pd.isna(
         )
     )
 
+
 else:
 
     date_caption = (
@@ -840,40 +822,32 @@ st.caption(
 
 
 # ============================================================
-# Current metrics
+# Metrics
 # ============================================================
 
 metric_row(
     [
         (
             "Sleep",
-            (
-                f"{safe_number(latest.get('sleep')):.1f} h"
-            ),
+            f"{safe_number(latest.get('sleep')):.1f} h",
             "last main sleep period",
         ),
 
         (
             "Physical activity",
-            (
-                f"{safe_number(latest.get('activity_minutes')):.0f} min"
-            ),
+            f"{safe_number(latest.get('activity_minutes')):.0f} min",
             "reported for this day",
         ),
 
         (
             "Connectedness",
-            (
-                f"{safe_number(latest.get('connectedness'), 3):.0f} / 5"
-            ),
+            f"{safe_number(latest.get('connectedness'), 3):.0f} / 5",
             "self-reported",
         ),
 
         (
             "Screen time",
-            (
-                f"{safe_number(latest.get('screen_time')):.1f} h"
-            ),
+            f"{safe_number(latest.get('screen_time')):.1f} h",
             "recreational",
         ),
     ]
@@ -887,25 +861,19 @@ metric_row(
     [
         (
             "Mood",
-            (
-                f"{safe_number(latest.get('mood')):.0f} / 5"
-            ),
+            f"{safe_number(latest.get('mood')):.0f} / 5",
             "higher = better",
         ),
 
         (
             "Stress",
-            (
-                f"{safe_number(latest.get('stress')):.0f} / 5"
-            ),
+            f"{safe_number(latest.get('stress')):.0f} / 5",
             "higher = more stress",
         ),
 
         (
             "Energy",
-            (
-                f"{safe_number(latest.get('energy')):.0f} / 5"
-            ),
+            f"{safe_number(latest.get('energy')):.0f} / 5",
             "higher = more energy",
         ),
 
@@ -927,7 +895,7 @@ divider()
 
 
 # ============================================================
-# Prediction record
+# Stored prediction
 # ============================================================
 
 section_heading(
@@ -952,10 +920,7 @@ latest_day_type = (
 
 
 # ============================================================
-# Explanation calculation
-#
-# This is NOT used to overwrite the stored recommendation.
-# It is used only to provide the current local-sensitivity view.
+# Current explainability calculation
 # ============================================================
 
 explanation_details = get_prediction_details(
@@ -1039,7 +1004,7 @@ explanation_details = get_prediction_details(
 
 
 # ============================================================
-# Prefer STORED v2.8 research snapshot
+# Stored v2.8 snapshot
 # ============================================================
 
 snapshot_available = (
@@ -1050,10 +1015,6 @@ snapshot_available = (
 
 
 if snapshot_available:
-
-    # --------------------------------------------------------
-    # Stored intervention
-    # --------------------------------------------------------
 
     displayed_prediction = str(
         prediction_record[
@@ -1068,10 +1029,6 @@ if snapshot_available:
         )
     )
 
-
-    # --------------------------------------------------------
-    # Stored probabilities
-    # --------------------------------------------------------
 
     displayed_probabilities = (
         stored_probability_distribution(
@@ -1089,10 +1046,6 @@ if snapshot_available:
         reverse=True,
     )
 
-
-    # --------------------------------------------------------
-    # Stored uncertainty
-    # --------------------------------------------------------
 
     displayed_certainty = (
         prediction_record.get(
@@ -1122,10 +1075,6 @@ if snapshot_available:
         )
     )
 
-
-    # --------------------------------------------------------
-    # Stored contextual action
-    # --------------------------------------------------------
 
     displayed_action_id = str(
         prediction_record.get(
@@ -1166,7 +1115,7 @@ if snapshot_available:
         prediction_record.get(
             "model_version"
         )
-        or "legacy/unknown"
+        or "Unknown"
     )
 
 
@@ -1174,7 +1123,7 @@ if snapshot_available:
         prediction_record.get(
             "action_engine_version"
         )
-        or "legacy/unknown"
+        or "Unknown"
     )
 
 
@@ -1240,7 +1189,7 @@ else:
     )
 
 
-    legacy_contextual_guidance = (
+    legacy_guidance = (
         personalise_recommendation(
             prediction=displayed_prediction,
 
@@ -1321,32 +1270,32 @@ else:
 
 
     displayed_action_id = (
-        legacy_contextual_guidance.action_id
+        legacy_guidance.action_id
     )
 
 
     displayed_action_title = (
-        legacy_contextual_guidance.title
+        legacy_guidance.title
     )
 
 
     displayed_action_text = (
-        legacy_contextual_guidance.action
+        legacy_guidance.action
     )
 
 
     displayed_action_reason = (
-        legacy_contextual_guidance.reason
+        legacy_guidance.reason
     )
 
 
     displayed_model_version = (
-        "legacy record"
+        "Legacy record"
     )
 
 
     displayed_action_engine_version = (
-        "legacy reconstruction"
+        "Legacy reconstruction"
     )
 
 
@@ -1356,16 +1305,11 @@ else:
 
 recommendation(
     title=displayed_action_title,
-
     explanation=displayed_action_text,
-
     confidence=(
         f"{displayed_confidence:.0%}"
     ),
-
-    certainty=(
-        displayed_certainty
-    ),
+    certainty=displayed_certainty,
 )
 
 
@@ -1382,13 +1326,12 @@ st.caption(
 if not snapshot_available:
 
     st.caption(
-        "Legacy record · recommendation metadata was reconstructed "
-        "because this check-in predates research-grade snapshot logging."
+        "Legacy record · recommendation metadata was reconstructed."
     )
 
 
 # ============================================================
-# Certainty + alternative
+# Certainty and alternative
 # ============================================================
 
 certainty_col, alternative_col = (
@@ -1412,9 +1355,9 @@ with certainty_col:
 
 
     st.caption(
-        "This describes how strongly the model separated its "
-        "preferred intervention from alternatives. It is not "
-        "certainty that the intervention will work."
+        "How strongly the model separated its preferred "
+        "intervention from alternatives. This is not a "
+        "probability that the intervention will work."
     )
 
 
@@ -1446,6 +1389,7 @@ with alternative_col:
             f"{alternative[1]:.0%}"
         )
 
+
     else:
 
         st.markdown(
@@ -1454,7 +1398,7 @@ with alternative_col:
 
 
 # ============================================================
-# Why this recommendation
+# Explanation
 # ============================================================
 
 st.write("")
@@ -1463,8 +1407,9 @@ st.write("")
 section_heading(
     "Why NudgeWise suggested this",
     (
-        "The AI selects a broad intervention and the contextual "
-        "action engine turns that intervention into a specific action."
+        "The AI selects a broad intervention and the "
+        "contextual action engine turns that intervention "
+        "into a specific action."
     ),
 )
 
@@ -1488,8 +1433,8 @@ st.markdown(
 
 
 st.caption(
-    "The explanation below uses local model sensitivity. "
-    "It describes model behaviour and does not establish causation."
+    "These explanations describe local model sensitivity "
+    "and should not be interpreted as causal effects."
 )
 
 
@@ -1504,18 +1449,13 @@ for reason in explanation_details.get(
 
 
 # ============================================================
-# Model sensitivity
+# Technical explainability
 # ============================================================
 
 with st.expander(
-    "See model sensitivity details"
+    "Model sensitivity details",
+    expanded=False,
 ):
-
-    st.caption(
-        "Each input is individually compared with a reference "
-        "value while the other inputs remain unchanged."
-    )
-
 
     positive_sensitivities = [
         item
@@ -1548,6 +1488,7 @@ with st.expander(
                 f"{item['effect']:+.1%}"
             )
 
+
     else:
 
         st.write(
@@ -1563,11 +1504,12 @@ with st.expander(
 
 
 # ============================================================
-# Full probability distribution
+# Probability distribution
 # ============================================================
 
 with st.expander(
-    "See all recommendation probabilities"
+    "Recommendation probabilities",
+    expanded=False,
 ):
 
     for (
@@ -1595,9 +1537,8 @@ with st.expander(
 
 
     st.caption(
-        "These values describe the model's relative preference "
-        "distribution. They are not probabilities that an "
-        "intervention will improve wellbeing."
+        "These values describe relative model preference, "
+        "not probabilities that an intervention will improve wellbeing."
     )
 
 
@@ -1606,10 +1547,11 @@ with st.expander(
 # ============================================================
 
 with st.expander(
-    "Recommendation research metadata"
+    "Research metadata",
+    expanded=False,
 ):
 
-    metadata_col_1, metadata_col_2 = (
+    metadata_left, metadata_right = (
         st.columns(
             2,
             gap="large",
@@ -1617,7 +1559,7 @@ with st.expander(
     )
 
 
-    with metadata_col_1:
+    with metadata_left:
 
         st.caption(
             "MODEL VERSION"
@@ -1641,7 +1583,7 @@ with st.expander(
         )
 
 
-    with metadata_col_2:
+    with metadata_right:
 
         st.caption(
             "TOP-TWO MARGIN"
@@ -1662,36 +1604,18 @@ with st.expander(
 
 
     st.caption(
-        (
-            f"Raw entropy: "
-            f"{displayed_entropy:.3f}"
-        )
+        f"Raw entropy: {displayed_entropy:.3f}"
     )
 
 
-    if snapshot_available:
-
-        st.caption(
-            "These values were stored with this prediction "
-            "when it was generated."
-        )
-
-    else:
-
-        st.caption(
-            "This legacy record predates complete prediction "
-            "snapshot storage, so these values were reconstructed."
-        )
+divider()
 
 
 # ============================================================
-# Feedback
+# Recommendation feedback
 # ============================================================
 
 if prediction_record:
-
-    st.write("")
-
 
     section_heading(
         "How was this recommendation?",
@@ -1736,9 +1660,7 @@ if prediction_record:
 
             st.metric(
                 "Helpfulness",
-                (
-                    f"{existing_feedback['rating']} / 5"
-                ),
+                f"{existing_feedback['rating']} / 5",
             )
 
 
@@ -1755,27 +1677,8 @@ if prediction_record:
 
                 st.metric(
                     "Made sense",
-                    (
-                        f"{sense_value} / 5"
-                    ),
+                    f"{sense_value} / 5",
                 )
-
-
-        stored_feedback_action = (
-            existing_feedback.get(
-                "action_id"
-            )
-        )
-
-
-        if stored_feedback_action:
-
-            st.caption(
-                (
-                    f"Feedback linked to action: "
-                    f"{stored_feedback_action}"
-                )
-            )
 
 
     else:
@@ -1931,14 +1834,14 @@ divider()
 
 
 # ============================================================
-# Recent check-ins
+# Collapsible recent check-ins
 # ============================================================
 
 section_heading(
     "Recent check-ins",
     (
-        "Review recent entries. Today's entry can be edited, "
-        "and any entry can be deleted."
+        "Your history stays collapsed until you need "
+        "to review, edit or delete an entry."
     ),
 )
 
@@ -1953,268 +1856,250 @@ recent = (
         ascending=False,
     )
     .head(
-        7
+        14
     )
 )
 
 
-for _, row in recent.iterrows():
+with st.expander(
+    (
+        f"View and manage recent check-ins "
+        f"({len(recent)})"
+    ),
+    expanded=False,
+):
 
-    checkin_id = int(
-        row[
-            "id"
-        ]
-    )
+    for _, row in recent.iterrows():
 
-
-    checkin_date = str(
-        row.get(
-            "checkin_date",
-            "",
-        )
-    )
-
-
-    entry_type = str(
-        row.get(
-            "entry_type",
-            "live",
-        )
-    )
-
-
-    is_today = (
-        checkin_date
-        == today_string
-    )
-
-
-    parsed_date = pd.to_datetime(
-        checkin_date,
-        errors="coerce",
-    )
-
-
-    date_display = (
-        parsed_date.strftime(
-            "%A, %d %B"
+        checkin_id = int(
+            row[
+                "id"
+            ]
         )
 
-        if not pd.isna(
-            parsed_date
-        )
 
-        else checkin_date
-    )
-
-
-    with st.container(
-        border=True
-    ):
-
-        information_col, action_col = (
-            st.columns(
-                [
-                    3.2,
-                    1,
-                ],
-                gap="large",
+        checkin_date = str(
+            row.get(
+                "checkin_date",
+                "",
             )
         )
 
 
-        with information_col:
+        entry_type = str(
+            row.get(
+                "entry_type",
+                "live",
+            )
+        )
 
-            st.markdown(
-                f"### {date_display}"
+
+        is_today = (
+            checkin_date
+            == today_string
+        )
+
+
+        parsed_date = pd.to_datetime(
+            checkin_date,
+            errors="coerce",
+        )
+
+
+        date_display = (
+            parsed_date.strftime(
+                "%A, %d %B"
             )
 
+            if not pd.isna(
+                parsed_date
+            )
 
-            st.caption(
-                (
-                    f"Sleep "
-                    f"{safe_number(row.get('sleep')):.1f} h"
-                    f" · Mood "
-                    f"{safe_number(row.get('mood')):.0f}/5"
-                    f" · Stress "
-                    f"{safe_number(row.get('stress')):.0f}/5"
-                    f" · Energy "
-                    f"{safe_number(row.get('energy')):.0f}/5"
+            else checkin_date
+        )
+
+
+        with st.container(
+            border=True
+        ):
+
+            information_col, action_col = (
+                st.columns(
+                    [
+                        4,
+                        1,
+                    ],
+                    gap="large",
                 )
             )
 
 
-            st.caption(
-                (
-                    f"Activity "
-                    f"{safe_number(row.get('activity_minutes')):.0f} min"
-                    f" · Connectedness "
-                    f"{safe_number(row.get('connectedness'), 3):.0f}/5"
-                    f" · Screen "
-                    f"{safe_number(row.get('screen_time')):.1f} h"
+            with information_col:
+
+                st.markdown(
+                    f"### {date_display}"
                 )
-            )
 
 
-            st.caption(
-                (
+                st.caption(
+                    (
+                        f"Sleep "
+                        f"{safe_number(row.get('sleep')):.1f} h"
+                        f" · Mood "
+                        f"{safe_number(row.get('mood')):.0f}/5"
+                        f" · Stress "
+                        f"{safe_number(row.get('stress')):.0f}/5"
+                        f" · Energy "
+                        f"{safe_number(row.get('energy')):.0f}/5"
+                    )
+                )
+
+
+                st.caption(
+                    (
+                        f"Activity "
+                        f"{safe_number(row.get('activity_minutes')):.0f} min"
+                        f" · Connectedness "
+                        f"{safe_number(row.get('connectedness'), 3):.0f}/5"
+                        f" · Screen "
+                        f"{safe_number(row.get('screen_time')):.1f} h"
+                    )
+                )
+
+
+                st.caption(
                     f"Context: "
                     f"{row.get('activity', '')}"
                 )
+
+
+                if entry_type == "retrospective":
+
+                    st.caption(
+                        "Retrospective entry"
+                    )
+
+
+            with action_col:
+
+                if is_today:
+
+                    if st.button(
+                        "Edit",
+                        key=(
+                            f"edit_{checkin_id}"
+                        ),
+                        width="stretch",
+                    ):
+
+                        st.switch_page(
+                            "app.py"
+                        )
+
+
+                else:
+
+                    st.caption(
+                        "Past entry"
+                    )
+
+
+            delete_key = (
+                f"delete_confirm_{checkin_id}"
             )
 
 
-            if entry_type == "retrospective":
-
-                st.caption(
-                    "Added retrospectively"
-                )
-
-
-        with action_col:
-
-            if is_today:
+            if not st.session_state.get(
+                delete_key,
+                False,
+            ):
 
                 if st.button(
-                    "Edit",
+                    "Delete",
                     key=(
-                        f"edit_{checkin_id}"
+                        f"delete_{checkin_id}"
                     ),
-                    width="stretch",
+                    type="secondary",
                 ):
 
-                    st.switch_page(
-                        "app.py"
-                    )
+                    st.session_state[
+                        delete_key
+                    ] = True
+
+                    st.rerun()
+
 
             else:
 
-                st.caption(
-                    "Past entry"
+                st.warning(
+                    "Delete this check-in permanently? "
+                    "Its prediction and feedback will also be removed."
                 )
 
 
-        delete_key = (
-            f"delete_confirm_{checkin_id}"
-        )
-
-
-        if not st.session_state.get(
-            delete_key,
-            False,
-        ):
-
-            if st.button(
-                "Delete log",
-                key=(
-                    f"delete_{checkin_id}"
-                ),
-                type="secondary",
-            ):
-
-                st.session_state[
-                    delete_key
-                ] = True
-
-                st.rerun()
-
-
-        else:
-
-            st.warning(
-                "Delete this check-in permanently? "
-                "Its recommendation and feedback will also be removed."
-            )
-
-
-            confirm_col, cancel_col = (
-                st.columns(
-                    2
+                confirm_col, cancel_col = (
+                    st.columns(
+                        2
+                    )
                 )
-            )
 
 
-            with confirm_col:
+                with confirm_col:
 
-                if st.button(
-                    "Yes, delete",
-                    key=(
-                        f"yes_{checkin_id}"
-                    ),
-                    type="primary",
-                    width="stretch",
-                ):
+                    if st.button(
+                        "Yes, delete",
+                        key=(
+                            f"yes_{checkin_id}"
+                        ),
+                        type="primary",
+                        width="stretch",
+                    ):
 
-                    delete_checkin(
-                        checkin_id=checkin_id,
-                        user_id=user_id,
-                    )
-
-
-                    st.session_state.pop(
-                        delete_key,
-                        None,
-                    )
+                        delete_checkin(
+                            checkin_id=checkin_id,
+                            user_id=user_id,
+                        )
 
 
-                    st.rerun()
+                        st.session_state.pop(
+                            delete_key,
+                            None,
+                        )
 
 
-            with cancel_col:
-
-                if st.button(
-                    "Cancel",
-                    key=(
-                        f"cancel_{checkin_id}"
-                    ),
-                    width="stretch",
-                ):
-
-                    st.session_state.pop(
-                        delete_key,
-                        None,
-                    )
+                        st.rerun()
 
 
-                    st.rerun()
+                with cancel_col:
+
+                    if st.button(
+                        "Cancel",
+                        key=(
+                            f"cancel_{checkin_id}"
+                        ),
+                        width="stretch",
+                    ):
+
+                        st.session_state.pop(
+                            delete_key,
+                            None,
+                        )
+
+
+                        st.rerun()
 
 
 divider()
 
 
 # ============================================================
-# Missed-day entry
+# Quick actions
 # ============================================================
 
 section_heading(
-    "Missed a day?"
+    "Check-in options"
 )
 
-
-st.write(
-    "Add a check-in for a previous date to keep your "
-    "wellbeing history complete. Retrospective entries are "
-    "marked separately because they rely on recalled information."
-)
-
-
-if st.button(
-    "Add a missed check-in",
-    width="stretch",
-    key="add_missed_checkin",
-):
-
-    st.switch_page(
-        "pages/past_checkin.py"
-    )
-
-
-divider()
-
-
-# ============================================================
-# Today's check-in
-# ============================================================
 
 today_exists = (
     today_string
@@ -2228,47 +2113,88 @@ today_exists = (
 )
 
 
-section_heading(
-    "Today's check-in"
+today_col, missed_col = (
+    st.columns(
+        2,
+        gap="large",
+    )
 )
 
 
-if today_exists:
+with today_col:
 
-    st.write(
-        "You've already completed today's check-in."
-    )
-
-
-    if st.button(
-        "Edit today's check-in",
-        type="primary",
-        width="stretch",
-        key="edit_today",
+    with st.container(
+        border=True
     ):
 
-        st.switch_page(
-            "app.py"
+        st.markdown(
+            "### Today"
         )
 
 
-else:
+        if today_exists:
 
-    st.write(
-        "You haven't completed today's check-in yet."
-    )
+            st.write(
+                "Today's check-in is complete."
+            )
 
 
-    if st.button(
-        "Complete today's check-in",
-        type="primary",
-        width="stretch",
-        key="complete_today",
+            if st.button(
+                "Edit today's check-in",
+                type="primary",
+                width="stretch",
+                key="edit_today",
+            ):
+
+                st.switch_page(
+                    "app.py"
+                )
+
+
+        else:
+
+            st.write(
+                "You haven't completed today's check-in yet."
+            )
+
+
+            if st.button(
+                "Complete today's check-in",
+                type="primary",
+                width="stretch",
+                key="complete_today",
+            ):
+
+                st.switch_page(
+                    "app.py"
+                )
+
+
+with missed_col:
+
+    with st.container(
+        border=True
     ):
 
-        st.switch_page(
-            "app.py"
+        st.markdown(
+            "### Missed a day?"
         )
+
+
+        st.write(
+            "Add a retrospective check-in for a previous date."
+        )
+
+
+        if st.button(
+            "Add a missed check-in",
+            width="stretch",
+            key="add_missed_checkin",
+        ):
+
+            st.switch_page(
+                "pages/past_checkin.py"
+            )
 
 
 # ============================================================
@@ -2279,7 +2205,8 @@ divider()
 
 
 with st.expander(
-    "About this dashboard"
+    "About this dashboard",
+    expanded=False,
 ):
 
     st.write(
@@ -2287,44 +2214,37 @@ with st.expander(
         NudgeWise is a research prototype exploring personalised
         digital wellbeing recommendations.
 
-        The wellbeing indicator summarises six self-reported
-        dimensions: sleep, stress, mood, energy, physical activity
-        and perceived connectedness. It is a product-level research
-        measure, not a medical or clinical assessment.
+        The wellbeing indicator summarises sleep, stress, mood,
+        energy, physical activity and perceived connectedness.
+        It is a product-level research measure and is not a
+        medical or clinical assessment.
 
-        Recreational screen time is displayed and used by the AI,
-        but it is not directly converted into a wellbeing-score
-        penalty because NudgeWise does not assume one universal
-        harmful screen-time threshold.
+        Recreational screen time is used by the recommendation
+        system but is not directly converted into a universal
+        wellbeing-score penalty.
 
         The AI model selects one of six broad intervention classes.
-
         The contextual action engine then translates that intervention
-        into a more specific action using the participant's current
-        context. It does not override the AI-selected intervention.
+        into a specific action using the participant's current context.
 
-        For research-grade prediction records, NudgeWise stores the
-        model version, complete six-class probability distribution,
-        uncertainty measures and the exact contextual action displayed
-        to the participant.
+        Research-grade prediction records store the model version,
+        full six-class probability distribution, uncertainty measures
+        and exact contextual action shown to the participant.
 
-        This allows historical predictions to remain reproducible even
-        if the model or recommendation engine is later updated.
+        Model probabilities represent relative model preference.
+        They are not probabilities that an intervention will improve
+        wellbeing.
 
-        Model probabilities describe relative model preference and are
-        not probabilities that an intervention will improve wellbeing.
+        Local sensitivity explanations describe model behaviour and
+        should not be interpreted as causal effects.
 
-        Local model explanations describe model sensitivity to input
-        changes and should not be interpreted as causal effects.
+        Retrospective check-ins are stored separately because they rely
+        on recalled rather than same-day information.
 
-        Retrospective check-ins are marked separately because they rely
-        on recalled rather than same-day responses.
+        Editing a check-in regenerates its recommendation because the
+        underlying input data have changed.
 
-        Editing a check-in regenerates its prediction because the input
-        data have changed. Previous feedback attached to that replaced
-        prediction is therefore removed.
-
-        Deleting a check-in also removes its associated prediction and
-        feedback records.
+        Deleting a check-in also removes its linked prediction and
+        recommendation feedback.
         """
     )

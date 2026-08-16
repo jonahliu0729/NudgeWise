@@ -7,6 +7,8 @@ NudgeWise v2.8 research logging architecture.
 
 Stores:
 - authenticated participants
+- editable participant profiles
+- date of birth for automatic age calculation
 - live and retrospective check-ins
 - behavioural measurements
 - complete AI prediction snapshots
@@ -124,9 +126,6 @@ def _safe_probability(
 ) -> float | None:
     """
     Convert a probability-like value to a safe 0-1 float.
-
-    None remains None so older prediction records can remain
-    backwards compatible.
     """
 
     if value is None:
@@ -440,6 +439,85 @@ def get_user_by_auth_hash(
         response.data[
             0
         ]
+    )
+
+
+# ============================================================
+# Participant profile updates
+# ============================================================
+
+def update_user_profile(
+    user_id: int,
+    nickname: str,
+    date_of_birth: str | None = None,
+    age: int | None = None,
+) -> bool:
+    """
+    Update editable participant profile information.
+
+    date_of_birth should be supplied as YYYY-MM-DD.
+
+    The legacy age column remains populated for compatibility,
+    while date_of_birth becomes the source for automatic age
+    calculation in the profile UI.
+    """
+
+    clean_nickname = (
+        nickname.strip()
+        or "Participant"
+    )
+
+
+    payload: dict[str, Any] = {
+        "name":
+            clean_nickname,
+
+        "nickname":
+            clean_nickname,
+    }
+
+
+    if date_of_birth is not None:
+
+        payload[
+            "date_of_birth"
+        ] = str(
+            date_of_birth
+        )
+
+
+    if age is not None:
+
+        payload[
+            "age"
+        ] = int(
+            age
+        )
+
+
+    supabase = get_supabase()
+
+
+    response = (
+        supabase
+        .table(
+            "users"
+        )
+        .update(
+            payload
+        )
+        .eq(
+            "id",
+            int(
+                user_id
+            ),
+        )
+        .execute()
+    )
+
+
+    return bool(
+        response.data
     )
 
 
@@ -946,12 +1024,9 @@ def _build_prediction_payload(
 ) -> dict[str, Any]:
     """
     Build one complete prediction snapshot.
-
-    Optional values preserve compatibility with prediction rows
-    created before research-grade logging was introduced.
     """
 
-    payload = {
+    return {
         "checkin_id":
             int(
                 checkin_id
@@ -1053,9 +1128,6 @@ def _build_prediction_payload(
     }
 
 
-    return payload
-
-
 # ============================================================
 # Save prediction
 # ============================================================
@@ -1077,16 +1149,7 @@ def save_prediction(
     action_reason: str | None = None,
 ) -> int:
     """
-    Save a prediction.
-
-    Newer code can store the complete research snapshot.
-
-    Older code that only provides:
-        checkin_id
-        nudge
-        confidence
-
-    remains valid.
+    Save a complete or legacy-compatible prediction.
     """
 
     payload = _build_prediction_payload(
@@ -1161,7 +1224,8 @@ def replace_prediction(
     """
     Replace the prediction associated with an edited check-in.
 
-    Any old feedback attached to the replaced prediction is removed.
+    Any feedback attached to the old prediction is removed because
+    the displayed recommendation is no longer the same observation.
     """
 
     supabase = get_supabase()
@@ -1262,8 +1326,6 @@ def update_prediction_metadata(
 ) -> bool:
     """
     Update research metadata on an existing prediction.
-
-    Useful during the transition from older prediction code.
     """
 
     payload: dict[str, Any] = {}
@@ -1646,9 +1708,8 @@ def save_feedback(
     """
     Save feedback for a prediction.
 
-    If action_id is omitted, NudgeWise automatically retrieves the
-    action linked to the prediction so old dashboard code remains
-    compatible.
+    If action_id is omitted, NudgeWise automatically retrieves
+    the action linked to the prediction.
     """
 
     supabase = get_supabase()
