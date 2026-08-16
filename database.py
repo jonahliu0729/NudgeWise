@@ -1,28 +1,29 @@
 """
 database.py
 
-Persistent Supabase/PostgreSQL storage for NudgeWise v2.7.
+Persistent Supabase/PostgreSQL storage for NudgeWise.
 
-This replaces the previous local SQLite database.
+NudgeWise v2.8 research logging architecture.
 
-Why:
-Streamlit Community Cloud's local filesystem is not suitable
-for persistent longitudinal participant data.
-
-Supabase now stores:
+Stores:
 - authenticated participants
-- daily check-ins
-- retrospective check-ins
-- physical activity minutes
-- perceived connectedness
-- AI predictions
+- live and retrospective check-ins
+- behavioural measurements
+- complete AI prediction snapshots
+- model version
+- six-class probability distributions
+- uncertainty metrics
+- contextual action shown to the participant
 - recommendation feedback
 - usability feedback
 
 IMPORTANT
 ---------
-The Supabase secret key must be stored in Streamlit secrets
-and must never be committed to Git.
+The Supabase secret key must remain in Streamlit Secrets and
+must never be committed to Git.
+
+Existing prediction records created before v2.8 remain valid.
+Their newer research metadata fields may simply be NULL.
 """
 
 from __future__ import annotations
@@ -90,8 +91,12 @@ def get_supabase() -> Client:
 
 
     return create_client(
-        str(url),
-        str(key),
+        str(
+            url
+        ),
+        str(
+            key
+        ),
     )
 
 
@@ -101,16 +106,75 @@ def get_supabase() -> Client:
 
 def create_tables() -> None:
     """
-    Retained so existing NudgeWise code does not need changing.
+    Retained for compatibility with the existing application.
 
-    PostgreSQL tables are created through the Supabase SQL Editor,
-    not dynamically by the application.
+    PostgreSQL schema migrations are performed through the
+    Supabase SQL Editor.
     """
 
-    # Force connection initialization so configuration errors
-    # are discovered immediately.
-
     get_supabase()
+
+
+# ============================================================
+# Generic helpers
+# ============================================================
+
+def _safe_probability(
+    value,
+) -> float | None:
+    """
+    Convert a probability-like value to a safe 0-1 float.
+
+    None remains None so older prediction records can remain
+    backwards compatible.
+    """
+
+    if value is None:
+
+        return None
+
+
+    try:
+
+        probability = float(
+            value
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return None
+
+
+    return max(
+        0.0,
+        min(
+            1.0,
+            probability,
+        ),
+    )
+
+
+def _probability_from_distribution(
+    probabilities: dict[str, float] | None,
+    class_name: str,
+) -> float | None:
+    """
+    Safely extract one intervention probability.
+    """
+
+    if not probabilities:
+
+        return None
+
+
+    return _safe_probability(
+        probabilities.get(
+            class_name
+        )
+    )
 
 
 # ============================================================
@@ -121,17 +185,18 @@ def connectedness_to_social(
     connectedness: int,
 ) -> str:
     """
-    Preserve the legacy social field while the database still
-    contains it.
+    Preserve the legacy social field for compatibility.
 
-    v2.6+ AI uses connectedness directly.
+    The production v2.6+ AI uses connectedness directly.
     """
 
     value = max(
         1,
         min(
             5,
-            int(connectedness),
+            int(
+                connectedness
+            ),
         ),
     )
 
@@ -150,7 +215,7 @@ def connectedness_to_social(
 
 
 # ============================================================
-# Participant code
+# Participant codes
 # ============================================================
 
 def _generate_participant_code() -> str:
@@ -608,9 +673,6 @@ def save_checkin(
 
     except Exception as error:
 
-        # PostgreSQL still provides the final race-condition
-        # protection through the UNIQUE constraint.
-
         error_text = str(
             error
         ).lower()
@@ -777,10 +839,6 @@ def delete_checkin(
         return False
 
 
-    # Foreign keys are configured ON DELETE CASCADE, so
-    # associated predictions and feedback are removed safely
-    # by PostgreSQL.
-
     supabase = get_supabase()
 
 
@@ -867,14 +925,31 @@ def get_recent_checkins(
 
 
 # ============================================================
-# Predictions
+# Prediction payload builder
 # ============================================================
 
-def save_prediction(
+def _build_prediction_payload(
     checkin_id: int,
     nudge: str,
     confidence: float,
-) -> int:
+    model_version: str | None = None,
+    action_engine_version: str | None = None,
+    probabilities: dict[str, float] | None = None,
+    probability_margin: float | None = None,
+    entropy: float | None = None,
+    normalised_entropy: float | None = None,
+    certainty: str | None = None,
+    action_id: str | None = None,
+    action_title: str | None = None,
+    action_text: str | None = None,
+    action_reason: str | None = None,
+) -> dict[str, Any]:
+    """
+    Build one complete prediction snapshot.
+
+    Optional values preserve compatibility with prediction rows
+    created before research-grade logging was introduced.
+    """
 
     payload = {
         "checkin_id":
@@ -883,13 +958,153 @@ def save_prediction(
             ),
 
         "predicted_nudge":
-            nudge,
+            str(
+                nudge
+            ),
 
         "confidence":
             float(
                 confidence
             ),
+
+        "model_version":
+            model_version,
+
+        "action_engine_version":
+            action_engine_version,
+
+        "p_connect_socially":
+            _probability_from_distribution(
+                probabilities,
+                "Connect socially",
+            ),
+
+        "p_maintain_habits":
+            _probability_from_distribution(
+                probabilities,
+                "Maintain habits",
+            ),
+
+        "p_prepare_for_bed":
+            _probability_from_distribution(
+                probabilities,
+                "Prepare for bed",
+            ),
+
+        "p_reduce_screen_time":
+            _probability_from_distribution(
+                probabilities,
+                "Reduce screen time",
+            ),
+
+        "p_stay_active":
+            _probability_from_distribution(
+                probabilities,
+                "Stay active",
+            ),
+
+        "p_take_a_short_break":
+            _probability_from_distribution(
+                probabilities,
+                "Take a short break",
+            ),
+
+        "probability_margin":
+            (
+                float(
+                    probability_margin
+                )
+                if probability_margin is not None
+                else None
+            ),
+
+        "entropy":
+            (
+                float(
+                    entropy
+                )
+                if entropy is not None
+                else None
+            ),
+
+        "normalised_entropy":
+            (
+                float(
+                    normalised_entropy
+                )
+                if normalised_entropy is not None
+                else None
+            ),
+
+        "certainty":
+            certainty,
+
+        "action_id":
+            action_id,
+
+        "action_title":
+            action_title,
+
+        "action_text":
+            action_text,
+
+        "action_reason":
+            action_reason,
     }
+
+
+    return payload
+
+
+# ============================================================
+# Save prediction
+# ============================================================
+
+def save_prediction(
+    checkin_id: int,
+    nudge: str,
+    confidence: float,
+    model_version: str | None = None,
+    action_engine_version: str | None = None,
+    probabilities: dict[str, float] | None = None,
+    probability_margin: float | None = None,
+    entropy: float | None = None,
+    normalised_entropy: float | None = None,
+    certainty: str | None = None,
+    action_id: str | None = None,
+    action_title: str | None = None,
+    action_text: str | None = None,
+    action_reason: str | None = None,
+) -> int:
+    """
+    Save a prediction.
+
+    Newer code can store the complete research snapshot.
+
+    Older code that only provides:
+        checkin_id
+        nudge
+        confidence
+
+    remains valid.
+    """
+
+    payload = _build_prediction_payload(
+        checkin_id=checkin_id,
+        nudge=nudge,
+        confidence=confidence,
+        model_version=model_version,
+        action_engine_version=action_engine_version,
+        probabilities=probabilities,
+        probability_margin=probability_margin,
+        entropy=entropy,
+        normalised_entropy=normalised_entropy,
+        certainty=certainty,
+        action_id=action_id,
+        action_title=action_title,
+        action_text=action_text,
+        action_reason=action_reason,
+    )
 
 
     supabase = get_supabase()
@@ -923,16 +1138,34 @@ def save_prediction(
     )
 
 
+# ============================================================
+# Replace prediction
+# ============================================================
+
 def replace_prediction(
     checkin_id: int,
     nudge: str,
     confidence: float,
+    model_version: str | None = None,
+    action_engine_version: str | None = None,
+    probabilities: dict[str, float] | None = None,
+    probability_margin: float | None = None,
+    entropy: float | None = None,
+    normalised_entropy: float | None = None,
+    certainty: str | None = None,
+    action_id: str | None = None,
+    action_title: str | None = None,
+    action_text: str | None = None,
+    action_reason: str | None = None,
 ) -> int:
+    """
+    Replace the prediction associated with an edited check-in.
+
+    Any old feedback attached to the replaced prediction is removed.
+    """
 
     supabase = get_supabase()
 
-
-    # Find old prediction IDs first so feedback can be removed.
 
     old_predictions = (
         supabase
@@ -957,32 +1190,294 @@ def replace_prediction(
         or []
     ):
 
-        supabase.table(
-            "feedback"
-        ).delete().eq(
-            "prediction_id",
+        (
+            supabase
+            .table(
+                "feedback"
+            )
+            .delete()
+            .eq(
+                "prediction_id",
+                int(
+                    prediction[
+                        "id"
+                    ]
+                ),
+            )
+            .execute()
+        )
+
+
+    (
+        supabase
+        .table(
+            "predictions"
+        )
+        .delete()
+        .eq(
+            "checkin_id",
             int(
-                prediction[
-                    "id"
-                ]
+                checkin_id
             ),
-        ).execute()
-
-
-    supabase.table(
-        "predictions"
-    ).delete().eq(
-        "checkin_id",
-        int(
-            checkin_id
-        ),
-    ).execute()
+        )
+        .execute()
+    )
 
 
     return save_prediction(
         checkin_id=checkin_id,
         nudge=nudge,
         confidence=confidence,
+        model_version=model_version,
+        action_engine_version=action_engine_version,
+        probabilities=probabilities,
+        probability_margin=probability_margin,
+        entropy=entropy,
+        normalised_entropy=normalised_entropy,
+        certainty=certainty,
+        action_id=action_id,
+        action_title=action_title,
+        action_text=action_text,
+        action_reason=action_reason,
+    )
+
+
+# ============================================================
+# Update prediction research metadata
+# ============================================================
+
+def update_prediction_metadata(
+    prediction_id: int,
+    model_version: str | None = None,
+    action_engine_version: str | None = None,
+    probabilities: dict[str, float] | None = None,
+    probability_margin: float | None = None,
+    entropy: float | None = None,
+    normalised_entropy: float | None = None,
+    certainty: str | None = None,
+    action_id: str | None = None,
+    action_title: str | None = None,
+    action_text: str | None = None,
+    action_reason: str | None = None,
+) -> bool:
+    """
+    Update research metadata on an existing prediction.
+
+    Useful during the transition from older prediction code.
+    """
+
+    payload: dict[str, Any] = {}
+
+
+    if model_version is not None:
+
+        payload[
+            "model_version"
+        ] = model_version
+
+
+    if action_engine_version is not None:
+
+        payload[
+            "action_engine_version"
+        ] = action_engine_version
+
+
+    if probabilities is not None:
+
+        payload.update(
+            {
+                "p_connect_socially":
+                    _probability_from_distribution(
+                        probabilities,
+                        "Connect socially",
+                    ),
+
+                "p_maintain_habits":
+                    _probability_from_distribution(
+                        probabilities,
+                        "Maintain habits",
+                    ),
+
+                "p_prepare_for_bed":
+                    _probability_from_distribution(
+                        probabilities,
+                        "Prepare for bed",
+                    ),
+
+                "p_reduce_screen_time":
+                    _probability_from_distribution(
+                        probabilities,
+                        "Reduce screen time",
+                    ),
+
+                "p_stay_active":
+                    _probability_from_distribution(
+                        probabilities,
+                        "Stay active",
+                    ),
+
+                "p_take_a_short_break":
+                    _probability_from_distribution(
+                        probabilities,
+                        "Take a short break",
+                    ),
+            }
+        )
+
+
+    optional_fields = {
+        "probability_margin":
+            probability_margin,
+
+        "entropy":
+            entropy,
+
+        "normalised_entropy":
+            normalised_entropy,
+
+        "certainty":
+            certainty,
+
+        "action_id":
+            action_id,
+
+        "action_title":
+            action_title,
+
+        "action_text":
+            action_text,
+
+        "action_reason":
+            action_reason,
+    }
+
+
+    for field, value in optional_fields.items():
+
+        if value is not None:
+
+            payload[
+                field
+            ] = value
+
+
+    if not payload:
+
+        return True
+
+
+    supabase = get_supabase()
+
+
+    response = (
+        supabase
+        .table(
+            "predictions"
+        )
+        .update(
+            payload
+        )
+        .eq(
+            "id",
+            int(
+                prediction_id
+            ),
+        )
+        .execute()
+    )
+
+
+    return bool(
+        response.data
+    )
+
+
+# ============================================================
+# Prediction retrieval
+# ============================================================
+
+def get_prediction_by_id(
+    prediction_id: int,
+) -> dict[str, Any] | None:
+
+    supabase = get_supabase()
+
+
+    response = (
+        supabase
+        .table(
+            "predictions"
+        )
+        .select(
+            "*"
+        )
+        .eq(
+            "id",
+            int(
+                prediction_id
+            ),
+        )
+        .limit(
+            1
+        )
+        .execute()
+    )
+
+
+    if not response.data:
+
+        return None
+
+
+    return dict(
+        response.data[
+            0
+        ]
+    )
+
+
+def get_prediction_for_checkin(
+    checkin_id: int,
+) -> dict[str, Any] | None:
+
+    supabase = get_supabase()
+
+
+    response = (
+        supabase
+        .table(
+            "predictions"
+        )
+        .select(
+            "*"
+        )
+        .eq(
+            "checkin_id",
+            int(
+                checkin_id
+            ),
+        )
+        .order(
+            "created_at",
+            desc=True,
+        )
+        .limit(
+            1
+        )
+        .execute()
+    )
+
+
+    if not response.data:
+
+        return None
+
+
+    return dict(
+        response.data[
+            0
+        ]
     )
 
 
@@ -990,10 +1485,6 @@ def get_recent_predictions(
     user_id: int,
     limit: int = 30,
 ):
-
-    # Supabase/PostgREST supports nested relation selection.
-    # We retrieve predictions and constrain them through the
-    # linked check-in relationship.
 
     supabase = get_supabase()
 
@@ -1009,6 +1500,22 @@ def get_recent_predictions(
             checkin_id,
             predicted_nudge,
             confidence,
+            model_version,
+            action_engine_version,
+            p_connect_socially,
+            p_maintain_habits,
+            p_prepare_for_bed,
+            p_reduce_screen_time,
+            p_stay_active,
+            p_take_a_short_break,
+            probability_margin,
+            entropy,
+            normalised_entropy,
+            certainty,
+            action_id,
+            action_title,
+            action_text,
+            action_reason,
             created_at,
             checkins!inner(user_id)
             """
@@ -1044,10 +1551,12 @@ def get_recent_predictions(
             row
         )
 
+
         clean_row.pop(
             "checkins",
             None,
         )
+
 
         results.append(
             clean_row
@@ -1132,9 +1641,33 @@ def save_feedback(
     rating: int,
     makes_sense: int | None = None,
     comment: str | None = None,
+    action_id: str | None = None,
 ) -> None:
+    """
+    Save feedback for a prediction.
+
+    If action_id is omitted, NudgeWise automatically retrieves the
+    action linked to the prediction so old dashboard code remains
+    compatible.
+    """
 
     supabase = get_supabase()
+
+
+    if action_id is None:
+
+        prediction = get_prediction_by_id(
+            prediction_id
+        )
+
+
+        if prediction:
+
+            action_id = (
+                prediction.get(
+                    "action_id"
+                )
+            )
 
 
     payload = {
@@ -1169,13 +1702,11 @@ def save_feedback(
 
         "comment":
             comment,
+
+        "action_id":
+            action_id,
     }
 
-
-    # One feedback record per prediction.
-    #
-    # PostgreSQL UNIQUE(prediction_id) protects this at the
-    # database level.
 
     existing = get_feedback_for_prediction(
         prediction_id
@@ -1278,7 +1809,7 @@ def save_usability_feedback(
 
 def test_database_connection() -> bool:
     """
-    Small diagnostic helper for development.
+    Small development diagnostic.
     """
 
     supabase = get_supabase()

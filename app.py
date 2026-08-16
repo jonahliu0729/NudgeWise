@@ -1,18 +1,17 @@
 """
 app.py
 
-NudgeWise Version 2.6
+NudgeWise Version 2.8
 Authenticated daily digital wellbeing check-in.
 
 Features:
 - Google authentication
 - one check-in per participant per NZ calendar day
 - edit today's check-in
-- regenerate recommendation after edits
-- persistent participant history
-- physical activity minutes
-- perceived connectedness
-- fully integrated v2.6 AI prediction interface
+- persistent Supabase storage
+- v2.6 soft-probability AI
+- v2.7 contextual action engine
+- v2.8 research-grade prediction logging
 """
 
 from __future__ import annotations
@@ -24,6 +23,11 @@ import streamlit as st
 
 from components.navigation import (
     render_sidebar,
+)
+
+from components.theme import (
+    apply_theme,
+    configure_page,
 )
 
 from database import (
@@ -39,8 +43,7 @@ from database import (
 )
 
 from predict import (
-    explain_prediction,
-    predict_nudge,
+    get_prediction_details,
 )
 
 from services.auth import (
@@ -49,6 +52,10 @@ from services.auth import (
     get_google_display_name,
     is_logged_in,
     login,
+)
+
+from services.recommendations import (
+    personalise_recommendation,
 )
 
 
@@ -60,93 +67,15 @@ NZ_TIMEZONE = ZoneInfo(
     "Pacific/Auckland"
 )
 
+ACTION_ENGINE_VERSION = "2.7"
+
 
 # ============================================================
 # Page setup
 # ============================================================
 
-st.set_page_config(
-    page_title="NudgeWise",
-    page_icon=None,
-    layout="wide",
-    initial_sidebar_state="locked",
-)
-
-
-# ============================================================
-# Visual system
-# ============================================================
-
-st.markdown(
-    """
-<style>
-
-.stApp {
-    background:#FAFAF8;
-    color:#20201F;
-}
-
-[data-testid="stHeader"] {
-    background:transparent;
-}
-
-[data-testid="stSidebar"] {
-    background:#F4F4F1;
-    border-right:1px solid #E5E5E0;
-}
-
-.block-container {
-    max-width:1080px;
-    padding-top:3.4rem;
-    padding-bottom:5rem;
-}
-
-h1 {
-    font-size:2.7rem !important;
-    font-weight:650 !important;
-    letter-spacing:-0.05em !important;
-    color:#171717 !important;
-}
-
-h2 {
-    font-size:1.4rem !important;
-    font-weight:600 !important;
-    letter-spacing:-0.025em !important;
-}
-
-h3 {
-    font-size:1.08rem !important;
-    font-weight:600 !important;
-}
-
-p {
-    color:#696963;
-    line-height:1.6;
-}
-
-hr {
-    border:none;
-    border-top:1px solid #E5E5E0;
-    margin:2.3rem 0;
-}
-
-[data-testid="stForm"] {
-    border:none !important;
-    padding:0 !important;
-    background:transparent !important;
-}
-
-.stButton > button,
-.stFormSubmitButton > button {
-    min-height:3rem;
-    border-radius:11px !important;
-    font-weight:600 !important;
-}
-
-</style>
-""",
-    unsafe_allow_html=True,
-)
+configure_page()
+apply_theme()
 
 
 # ============================================================
@@ -252,8 +181,8 @@ if participant is None:
 
     st.write(
         "Your Google account has been verified. "
-        "NudgeWise only needs a small amount of "
-        "information to create your profile."
+        "NudgeWise only needs a small amount of information "
+        "to create your research profile."
     )
 
     with st.form(
@@ -307,12 +236,16 @@ if participant is None:
                     nickname.strip()
                     or "Participant"
                 ),
-                age=int(age),
+                age=int(
+                    age
+                ),
             )
         )
 
         st.session_state.user_id = (
-            participant["id"]
+            participant[
+                "id"
+            ]
         )
 
         st.rerun()
@@ -418,7 +351,7 @@ if is_editing:
 
         st.write(
             "Saving changes will update today's record "
-            "and regenerate your NudgeWise recommendation."
+            "and regenerate your recommendation."
         )
 
 else:
@@ -486,10 +419,11 @@ if is_editing:
         )
     )
 
-    default_activity = (
-        existing_checkin[
-            "activity"
-        ]
+    default_activity = str(
+        existing_checkin.get(
+            "activity",
+            "Phone",
+        )
     )
 
 else:
@@ -532,10 +466,6 @@ activity_index = (
 with st.form(
     "daily_checkin"
 ):
-
-    # --------------------------------------------------------
-    # Current wellbeing
-    # --------------------------------------------------------
 
     st.subheader(
         "How are you feeling right now?"
@@ -654,8 +584,7 @@ with st.form(
         step=10,
         help=(
             "Approximate minutes of activity that noticeably "
-            "raised your breathing or heart rate, such as sport, "
-            "running, brisk cycling or active training."
+            "raised your breathing or heart rate."
         ),
     )
 
@@ -693,7 +622,7 @@ with st.form(
 
     st.caption(
         "This helps NudgeWise judge whether a suggestion "
-        "makes sense right now. It is not a wellbeing score."
+        "makes sense right now."
     )
 
 
@@ -732,38 +661,53 @@ if submitted:
     try:
 
         # ----------------------------------------------------
-        # v2.6 AI prediction
+        # Complete v2.6 AI prediction
         # ----------------------------------------------------
 
-        prediction, confidence = (
-            predict_nudge(
-                sleep=sleep,
-                stress=stress,
-                mood=mood,
-                energy=energy,
-                screen_time=screen_time,
-                activity_minutes=int(
-                    activity_minutes
-                ),
-                connectedness=int(
-                    connectedness
-                ),
-                activity=activity,
-                day_type=day_type,
-                hour=current_hour,
-            )
+        ai_details = get_prediction_details(
+            sleep=sleep,
+            stress=stress,
+            mood=mood,
+            energy=energy,
+            screen_time=screen_time,
+            activity_minutes=int(
+                activity_minutes
+            ),
+            connectedness=int(
+                connectedness
+            ),
+            activity=activity,
+            day_type=day_type,
+            hour=current_hour,
+            include_explanation=True,
         )
 
 
-        reasons = (
-            explain_prediction(
+        prediction = (
+            ai_details[
+                "prediction"
+            ]
+        )
+
+        confidence = float(
+            ai_details[
+                "confidence"
+            ]
+        )
+
+
+        # ----------------------------------------------------
+        # v2.7 contextual action
+        # ----------------------------------------------------
+
+        contextual_guidance = (
+            personalise_recommendation(
                 prediction=prediction,
                 sleep=sleep,
                 stress=stress,
-                screen_time=screen_time,
-                hour=current_hour,
-                energy=energy,
                 mood=mood,
+                energy=energy,
+                screen_time=screen_time,
                 activity_minutes=int(
                     activity_minutes
                 ),
@@ -771,13 +715,13 @@ if submitted:
                     connectedness
                 ),
                 activity=activity,
-                day_type=day_type,
+                hour=current_hour,
             )
         )
 
 
         # ----------------------------------------------------
-        # Edit today's check-in
+        # Edit today's record
         # ----------------------------------------------------
 
         if is_editing:
@@ -817,12 +761,66 @@ if submitted:
                 st.stop()
 
 
-            prediction_id = (
-                replace_prediction(
-                    checkin_id=checkin_id,
-                    nudge=prediction,
-                    confidence=confidence,
-                )
+            prediction_id = replace_prediction(
+                checkin_id=checkin_id,
+                nudge=prediction,
+                confidence=confidence,
+
+                model_version=(
+                    ai_details.get(
+                        "model_version"
+                    )
+                ),
+
+                action_engine_version=(
+                    ACTION_ENGINE_VERSION
+                ),
+
+                probabilities=(
+                    ai_details[
+                        "probabilities"
+                    ]
+                ),
+
+                probability_margin=(
+                    ai_details[
+                        "probability_margin"
+                    ]
+                ),
+
+                entropy=(
+                    ai_details[
+                        "entropy"
+                    ]
+                ),
+
+                normalised_entropy=(
+                    ai_details[
+                        "normalised_entropy"
+                    ]
+                ),
+
+                certainty=(
+                    ai_details[
+                        "certainty"
+                    ]
+                ),
+
+                action_id=(
+                    contextual_guidance.action_id
+                ),
+
+                action_title=(
+                    contextual_guidance.title
+                ),
+
+                action_text=(
+                    contextual_guidance.action
+                ),
+
+                action_reason=(
+                    contextual_guidance.reason
+                ),
             )
 
 
@@ -852,17 +850,71 @@ if submitted:
             )
 
 
-            prediction_id = (
-                save_prediction(
-                    checkin_id=checkin_id,
-                    nudge=prediction,
-                    confidence=confidence,
-                )
+            prediction_id = save_prediction(
+                checkin_id=checkin_id,
+                nudge=prediction,
+                confidence=confidence,
+
+                model_version=(
+                    ai_details.get(
+                        "model_version"
+                    )
+                ),
+
+                action_engine_version=(
+                    ACTION_ENGINE_VERSION
+                ),
+
+                probabilities=(
+                    ai_details[
+                        "probabilities"
+                    ]
+                ),
+
+                probability_margin=(
+                    ai_details[
+                        "probability_margin"
+                    ]
+                ),
+
+                entropy=(
+                    ai_details[
+                        "entropy"
+                    ]
+                ),
+
+                normalised_entropy=(
+                    ai_details[
+                        "normalised_entropy"
+                    ]
+                ),
+
+                certainty=(
+                    ai_details[
+                        "certainty"
+                    ]
+                ),
+
+                action_id=(
+                    contextual_guidance.action_id
+                ),
+
+                action_title=(
+                    contextual_guidance.title
+                ),
+
+                action_text=(
+                    contextual_guidance.action
+                ),
+
+                action_reason=(
+                    contextual_guidance.reason
+                ),
             )
 
 
         # ----------------------------------------------------
-        # Session
+        # Session state
         # ----------------------------------------------------
 
         st.session_state.prediction = (
@@ -874,7 +926,10 @@ if submitted:
         )
 
         st.session_state.reasons = (
-            reasons
+            ai_details.get(
+                "reasons",
+                [],
+            )
         )
 
         st.session_state.prediction_id = (

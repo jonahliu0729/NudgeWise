@@ -1,32 +1,31 @@
 """
 pages/dashboard.py
 
-NudgeWise Version 2.7
+NudgeWise Version 2.8
 Authenticated personal wellbeing dashboard.
 
-Features:
-- participant-specific data
-- research-level wellbeing indicator
-- v2.6 AI intervention model
-- v2.7 contextual action engine
-- model certainty and alternatives
-- local explainability
+Research architecture:
+- participant-specific longitudinal data
+- NudgeWise wellbeing indicator
+- stored AI prediction snapshots
+- stored six-class probabilities
+- stored uncertainty metrics
+- stored contextual actions
 - recommendation feedback
 - longitudinal trends
-- recent check-in management
-- retrospective/missed-day check-ins
-- physical activity minutes
-- perceived connectedness
+- check-in management
+- retrospective entries
 
 IMPORTANT
 ---------
-The wellbeing indicator is a product-level research summary.
-It is NOT a clinical score.
+For predictions created under v2.8+, the dashboard displays the
+prediction snapshot STORED when the check-in was processed.
 
-Model probabilities describe the relative preference distribution
-learned from the NudgeWise synthetic decision model.
+It does not silently replace historical recommendations with the
+output of a newer model or action engine.
 
-They are NOT probabilities that an intervention will work.
+Older prediction records that predate research-grade logging are
+supported through a backwards-compatible reconstruction fallback.
 """
 
 from __future__ import annotations
@@ -74,8 +73,8 @@ from database import (
     create_tables,
     delete_checkin,
     get_feedback_for_prediction,
+    get_prediction_for_checkin,
     get_recent_checkins,
-    get_recent_predictions,
     get_user,
     save_feedback,
 )
@@ -101,6 +100,27 @@ from services.recommendations import (
 NZ_TIMEZONE = ZoneInfo(
     "Pacific/Auckland"
 )
+
+
+PROBABILITY_FIELDS = {
+    "Connect socially":
+        "p_connect_socially",
+
+    "Maintain habits":
+        "p_maintain_habits",
+
+    "Prepare for bed":
+        "p_prepare_for_bed",
+
+    "Reduce screen time":
+        "p_reduce_screen_time",
+
+    "Stay active":
+        "p_stay_active",
+
+    "Take a short break":
+        "p_take_a_short_break",
+}
 
 
 # ============================================================
@@ -193,7 +213,7 @@ today_string = (
 
 
 # ============================================================
-# Load data
+# Load check-ins
 # ============================================================
 
 rows = get_recent_checkins(
@@ -204,12 +224,6 @@ rows = get_recent_checkins(
 
 checkins = pd.DataFrame(
     rows
-)
-
-
-prediction_rows = get_recent_predictions(
-    user_id=user_id,
-    limit=100,
 )
 
 
@@ -229,6 +243,7 @@ def safe_number(
         ):
 
             return default
+
 
         return float(
             value
@@ -260,12 +275,6 @@ def clamp(
 def get_day_type_for_date(
     date_value,
 ) -> str:
-    """
-    Determine weekday/weekend from the check-in date itself.
-
-    This matters for retrospective entries because using today's
-    weekday/weekend status would give the AI incorrect context.
-    """
 
     parsed = pd.to_datetime(
         date_value,
@@ -291,27 +300,116 @@ def get_day_type_for_date(
     )
 
 
-def get_prediction_for_checkin(
-    checkin_id: int,
-):
+def stored_probability_distribution(
+    prediction_record: dict | None,
+) -> dict[str, float]:
     """
-    Find the stored prediction belonging to a specific check-in.
+    Reconstruct the six-class distribution stored in Supabase.
+
+    Returns an empty dictionary for legacy prediction records.
     """
 
-    for prediction_row in prediction_rows:
+    if not prediction_record:
 
-        if int(
-            prediction_row[
-                "checkin_id"
-            ]
-        ) == int(
-            checkin_id
+        return {}
+
+
+    probabilities = {}
+
+
+    for (
+        class_name,
+        field_name,
+    ) in PROBABILITY_FIELDS.items():
+
+        value = prediction_record.get(
+            field_name
+        )
+
+
+        if value is None:
+
+            return {}
+
+
+        try:
+
+            probability = float(
+                value
+            )
+
+        except (
+            TypeError,
+            ValueError,
         ):
 
-            return prediction_row
+            return {}
 
 
-    return None
+        probabilities[
+            class_name
+        ] = clamp(
+            probability
+        )
+
+
+    total = sum(
+        probabilities.values()
+    )
+
+
+    if total <= 0:
+
+        return {}
+
+
+    # Small floating-point differences can occur after storage.
+    # Renormalise for display only.
+
+    return {
+        class_name:
+            probability / total
+
+        for (
+            class_name,
+            probability,
+        )
+        in probabilities.items()
+    }
+
+
+def has_research_snapshot(
+    prediction_record: dict | None,
+) -> bool:
+    """
+    Determine whether this prediction was logged using the
+    research-grade v2.8 schema.
+    """
+
+    if not prediction_record:
+
+        return False
+
+
+    probabilities = (
+        stored_probability_distribution(
+            prediction_record
+        )
+    )
+
+
+    return bool(
+        probabilities
+        and prediction_record.get(
+            "action_id"
+        )
+        and prediction_record.get(
+            "action_title"
+        )
+        and prediction_record.get(
+            "action_text"
+        )
+    )
 
 
 # ============================================================
@@ -324,7 +422,7 @@ def wellbeing_indicator(
     """
     NudgeWise product-level wellbeing indicator.
 
-    This is NOT a clinical assessment.
+    NOT a medical or clinical assessment.
 
     Components:
     - sleep
@@ -333,10 +431,6 @@ def wellbeing_indicator(
     - energy
     - physical activity
     - connectedness
-
-    Screen time is deliberately NOT converted directly into a
-    wellbeing-score penalty because NudgeWise does not assume a
-    universal evidence-backed harmful screen-time threshold.
     """
 
     sleep = safe_number(
@@ -386,20 +480,13 @@ def wellbeing_indicator(
 
 
     # --------------------------------------------------------
-    # Sleep
+    # Components
     # --------------------------------------------------------
 
     sleep_component = clamp(
         sleep / 8.0
     )
 
-
-    # --------------------------------------------------------
-    # Stress
-    #
-    # 1 = very low
-    # 5 = very high
-    # --------------------------------------------------------
 
     stress_component = clamp(
         (
@@ -410,13 +497,6 @@ def wellbeing_indicator(
     )
 
 
-    # --------------------------------------------------------
-    # Mood
-    #
-    # 1 = very low
-    # 5 = very good
-    # --------------------------------------------------------
-
     mood_component = clamp(
         (
             mood
@@ -425,13 +505,6 @@ def wellbeing_indicator(
         / 4.0
     )
 
-
-    # --------------------------------------------------------
-    # Energy
-    #
-    # 1 = very low
-    # 5 = very high
-    # --------------------------------------------------------
 
     energy_component = clamp(
         (
@@ -442,19 +515,11 @@ def wellbeing_indicator(
     )
 
 
-    # --------------------------------------------------------
-    # Physical activity
-    # --------------------------------------------------------
-
     activity_component = clamp(
         activity_minutes
         / 60.0
     )
 
-
-    # --------------------------------------------------------
-    # Connectedness
-    # --------------------------------------------------------
 
     connection_component = clamp(
         (
@@ -526,7 +591,7 @@ def wellbeing_description(
 
 
 # ============================================================
-# History preparation
+# History
 # ============================================================
 
 def build_history(
@@ -641,7 +706,7 @@ if checkins.empty:
 
 
 # ============================================================
-# Prepare data
+# Prepare check-in data
 # ============================================================
 
 checkins[
@@ -793,7 +858,7 @@ metric_row(
             (
                 f"{safe_number(latest.get('activity_minutes')):.0f} min"
             ),
-            "reported today",
+            "reported for this day",
         ),
 
         (
@@ -845,7 +910,7 @@ metric_row(
         ),
 
         (
-            "Current context",
+            "Context",
             str(
                 latest.get(
                     "activity",
@@ -862,11 +927,18 @@ divider()
 
 
 # ============================================================
-# AI recommendation
+# Prediction record
 # ============================================================
 
 section_heading(
     "Personalised guidance"
+)
+
+
+prediction_record = (
+    get_prediction_for_checkin(
+        latest_checkin_id
+    )
 )
 
 
@@ -879,7 +951,14 @@ latest_day_type = (
 )
 
 
-ai_details = get_prediction_details(
+# ============================================================
+# Explanation calculation
+#
+# This is NOT used to overwrite the stored recommendation.
+# It is used only to provide the current local-sensitivity view.
+# ============================================================
+
+explanation_details = get_prediction_details(
     sleep=safe_number(
         latest.get(
             "sleep"
@@ -954,114 +1033,338 @@ ai_details = get_prediction_details(
             now.hour,
         )
     ),
+
+    include_explanation=True,
 )
 
 
 # ============================================================
-# v2.7 contextual action
+# Prefer STORED v2.8 research snapshot
 # ============================================================
 
-contextual_guidance = (
-    personalise_recommendation(
-        prediction=ai_details[
-            "prediction"
-        ],
-
-        sleep=safe_number(
-            latest.get(
-                "sleep"
-            )
-        ),
-
-        stress=int(
-            safe_number(
-                latest.get(
-                    "stress"
-                ),
-                3,
-            )
-        ),
-
-        mood=int(
-            safe_number(
-                latest.get(
-                    "mood"
-                ),
-                3,
-            )
-        ),
-
-        energy=int(
-            safe_number(
-                latest.get(
-                    "energy"
-                ),
-                3,
-            )
-        ),
-
-        screen_time=safe_number(
-            latest.get(
-                "screen_time"
-            )
-        ),
-
-        activity_minutes=int(
-            safe_number(
-                latest.get(
-                    "activity_minutes"
-                ),
-                0,
-            )
-        ),
-
-        connectedness=int(
-            safe_number(
-                latest.get(
-                    "connectedness"
-                ),
-                3,
-            )
-        ),
-
-        activity=str(
-            latest.get(
-                "activity",
-                "Relaxing",
-            )
-        ),
-
-        hour=int(
-            safe_number(
-                latest.get(
-                    "hour"
-                ),
-                now.hour,
-            )
-        ),
+snapshot_available = (
+    has_research_snapshot(
+        prediction_record
     )
 )
 
 
+if snapshot_available:
+
+    # --------------------------------------------------------
+    # Stored intervention
+    # --------------------------------------------------------
+
+    displayed_prediction = str(
+        prediction_record[
+            "predicted_nudge"
+        ]
+    )
+
+
+    displayed_confidence = safe_number(
+        prediction_record.get(
+            "confidence"
+        )
+    )
+
+
+    # --------------------------------------------------------
+    # Stored probabilities
+    # --------------------------------------------------------
+
+    displayed_probabilities = (
+        stored_probability_distribution(
+            prediction_record
+        )
+    )
+
+
+    ordered_probabilities = sorted(
+        displayed_probabilities.items(),
+        key=lambda item:
+            item[
+                1
+            ],
+        reverse=True,
+    )
+
+
+    # --------------------------------------------------------
+    # Stored uncertainty
+    # --------------------------------------------------------
+
+    displayed_certainty = (
+        prediction_record.get(
+            "certainty"
+        )
+        or "Unknown"
+    )
+
+
+    displayed_margin = safe_number(
+        prediction_record.get(
+            "probability_margin"
+        )
+    )
+
+
+    displayed_entropy = safe_number(
+        prediction_record.get(
+            "entropy"
+        )
+    )
+
+
+    displayed_normalised_entropy = safe_number(
+        prediction_record.get(
+            "normalised_entropy"
+        )
+    )
+
+
+    # --------------------------------------------------------
+    # Stored contextual action
+    # --------------------------------------------------------
+
+    displayed_action_id = str(
+        prediction_record.get(
+            "action_id"
+        )
+        or ""
+    )
+
+
+    displayed_action_title = str(
+        prediction_record.get(
+            "action_title"
+        )
+        or displayed_prediction
+    )
+
+
+    displayed_action_text = str(
+        prediction_record.get(
+            "action_text"
+        )
+        or ""
+    )
+
+
+    displayed_action_reason = str(
+        prediction_record.get(
+            "action_reason"
+        )
+        or (
+            "This action was selected from the context "
+            "available when the recommendation was generated."
+        )
+    )
+
+
+    displayed_model_version = (
+        prediction_record.get(
+            "model_version"
+        )
+        or "legacy/unknown"
+    )
+
+
+    displayed_action_engine_version = (
+        prediction_record.get(
+            "action_engine_version"
+        )
+        or "legacy/unknown"
+    )
+
+
 # ============================================================
-# Personalised recommendation card
+# Legacy fallback
+# ============================================================
+
+else:
+
+    displayed_prediction = (
+        explanation_details[
+            "prediction"
+        ]
+    )
+
+
+    displayed_confidence = float(
+        explanation_details[
+            "confidence"
+        ]
+    )
+
+
+    displayed_probabilities = (
+        explanation_details[
+            "probabilities"
+        ]
+    )
+
+
+    ordered_probabilities = (
+        explanation_details[
+            "ordered_probabilities"
+        ]
+    )
+
+
+    displayed_certainty = (
+        explanation_details[
+            "certainty"
+        ]
+    )
+
+
+    displayed_margin = safe_number(
+        explanation_details.get(
+            "probability_margin"
+        )
+    )
+
+
+    displayed_entropy = safe_number(
+        explanation_details.get(
+            "entropy"
+        )
+    )
+
+
+    displayed_normalised_entropy = safe_number(
+        explanation_details.get(
+            "normalised_entropy"
+        )
+    )
+
+
+    legacy_contextual_guidance = (
+        personalise_recommendation(
+            prediction=displayed_prediction,
+
+            sleep=safe_number(
+                latest.get(
+                    "sleep"
+                )
+            ),
+
+            stress=int(
+                safe_number(
+                    latest.get(
+                        "stress"
+                    ),
+                    3,
+                )
+            ),
+
+            mood=int(
+                safe_number(
+                    latest.get(
+                        "mood"
+                    ),
+                    3,
+                )
+            ),
+
+            energy=int(
+                safe_number(
+                    latest.get(
+                        "energy"
+                    ),
+                    3,
+                )
+            ),
+
+            screen_time=safe_number(
+                latest.get(
+                    "screen_time"
+                )
+            ),
+
+            activity_minutes=int(
+                safe_number(
+                    latest.get(
+                        "activity_minutes"
+                    ),
+                    0,
+                )
+            ),
+
+            connectedness=int(
+                safe_number(
+                    latest.get(
+                        "connectedness"
+                    ),
+                    3,
+                )
+            ),
+
+            activity=str(
+                latest.get(
+                    "activity",
+                    "Relaxing",
+                )
+            ),
+
+            hour=int(
+                safe_number(
+                    latest.get(
+                        "hour"
+                    ),
+                    now.hour,
+                )
+            ),
+        )
+    )
+
+
+    displayed_action_id = (
+        legacy_contextual_guidance.action_id
+    )
+
+
+    displayed_action_title = (
+        legacy_contextual_guidance.title
+    )
+
+
+    displayed_action_text = (
+        legacy_contextual_guidance.action
+    )
+
+
+    displayed_action_reason = (
+        legacy_contextual_guidance.reason
+    )
+
+
+    displayed_model_version = (
+        "legacy record"
+    )
+
+
+    displayed_action_engine_version = (
+        "legacy reconstruction"
+    )
+
+
+# ============================================================
+# Recommendation card
 # ============================================================
 
 recommendation(
-    title=contextual_guidance.title,
+    title=displayed_action_title,
 
-    explanation=(
-        contextual_guidance.action
-    ),
+    explanation=displayed_action_text,
 
     confidence=(
-        f"{ai_details['confidence']:.0%}"
+        f"{displayed_confidence:.0%}"
     ),
 
     certainty=(
-        ai_details[
-            "certainty"
-        ]
+        displayed_certainty
     ),
 )
 
@@ -1069,11 +1372,19 @@ recommendation(
 st.caption(
     (
         f"AI intervention: "
-        f"{ai_details['prediction']} "
-        f"· Action ID: "
-        f"{contextual_guidance.action_id}"
+        f"{displayed_prediction}"
+        f" · Action ID: "
+        f"{displayed_action_id}"
     )
 )
+
+
+if not snapshot_available:
+
+    st.caption(
+        "Legacy record · recommendation metadata was reconstructed "
+        "because this check-in predates research-grade snapshot logging."
+    )
 
 
 # ============================================================
@@ -1096,14 +1407,14 @@ with certainty_col:
 
 
     st.markdown(
-        f"### {ai_details['certainty']}"
+        f"### {displayed_certainty}"
     )
 
 
     st.caption(
-        "This describes how strongly the model separates its "
-        "preferred intervention from the alternatives. It is "
-        "not certainty that the intervention will work."
+        "This describes how strongly the model separated its "
+        "preferred intervention from alternatives. It is not "
+        "certainty that the intervention will work."
     )
 
 
@@ -1114,14 +1425,16 @@ with alternative_col:
     )
 
 
-    alternative = (
-        ai_details[
-            "alternative"
-        ]
-    )
+    if len(
+        ordered_probabilities
+    ) >= 2:
 
+        alternative = (
+            ordered_probabilities[
+                1
+            ]
+        )
 
-    if alternative:
 
         st.markdown(
             f"### {alternative[0]}"
@@ -1141,7 +1454,7 @@ with alternative_col:
 
 
 # ============================================================
-# Explainability
+# Why this recommendation
 # ============================================================
 
 st.write("")
@@ -1150,16 +1463,11 @@ st.write("")
 section_heading(
     "Why NudgeWise suggested this",
     (
-        "NudgeWise first selects an intervention using the "
-        "v2.6 AI model, then adapts the specific action to "
-        "your current context."
+        "The AI selects a broad intervention and the contextual "
+        "action engine turns that intervention into a specific action."
     ),
 )
 
-
-# ------------------------------------------------------------
-# Contextual action explanation
-# ------------------------------------------------------------
 
 st.markdown(
     "**Why this specific action**"
@@ -1167,16 +1475,12 @@ st.markdown(
 
 
 st.write(
-    contextual_guidance.reason
+    displayed_action_reason
 )
 
 
 st.write("")
 
-
-# ------------------------------------------------------------
-# AI model explanation
-# ------------------------------------------------------------
 
 st.markdown(
     "**Why the AI selected this intervention**"
@@ -1184,15 +1488,15 @@ st.markdown(
 
 
 st.caption(
-    "These explanations come from local model-sensitivity "
-    "analysis. They describe which inputs supported the model "
-    "output and do not imply causation."
+    "The explanation below uses local model sensitivity. "
+    "It describes model behaviour and does not establish causation."
 )
 
 
-for reason in ai_details[
-    "reasons"
-]:
+for reason in explanation_details.get(
+    "reasons",
+    [],
+):
 
     st.write(
         f"• {reason}"
@@ -1208,8 +1512,8 @@ with st.expander(
 ):
 
     st.caption(
-        "Each input is compared with a reference value while "
-        "the other inputs are kept unchanged."
+        "Each input is individually compared with a reference "
+        "value while the other inputs remain unchanged."
     )
 
 
@@ -1217,7 +1521,7 @@ with st.expander(
         item
 
         for item
-        in ai_details.get(
+        in explanation_details.get(
             "sensitivities",
             []
         )
@@ -1269,9 +1573,7 @@ with st.expander(
     for (
         recommendation_name,
         probability,
-    ) in ai_details[
-        "ordered_probabilities"
-    ]:
+    ) in ordered_probabilities:
 
         st.write(
             recommendation_name
@@ -1300,15 +1602,91 @@ with st.expander(
 
 
 # ============================================================
-# Recommendation feedback
+# Research metadata
 # ============================================================
 
-prediction_record = (
-    get_prediction_for_checkin(
-        latest_checkin_id
-    )
-)
+with st.expander(
+    "Recommendation research metadata"
+):
 
+    metadata_col_1, metadata_col_2 = (
+        st.columns(
+            2,
+            gap="large",
+        )
+    )
+
+
+    with metadata_col_1:
+
+        st.caption(
+            "MODEL VERSION"
+        )
+
+        st.write(
+            str(
+                displayed_model_version
+            )
+        )
+
+
+        st.caption(
+            "ACTION ENGINE VERSION"
+        )
+
+        st.write(
+            str(
+                displayed_action_engine_version
+            )
+        )
+
+
+    with metadata_col_2:
+
+        st.caption(
+            "TOP-TWO MARGIN"
+        )
+
+        st.write(
+            f"{displayed_margin:.3f}"
+        )
+
+
+        st.caption(
+            "NORMALISED ENTROPY"
+        )
+
+        st.write(
+            f"{displayed_normalised_entropy:.3f}"
+        )
+
+
+    st.caption(
+        (
+            f"Raw entropy: "
+            f"{displayed_entropy:.3f}"
+        )
+    )
+
+
+    if snapshot_available:
+
+        st.caption(
+            "These values were stored with this prediction "
+            "when it was generated."
+        )
+
+    else:
+
+        st.caption(
+            "This legacy record predates complete prediction "
+            "snapshot storage, so these values were reconstructed."
+        )
+
+
+# ============================================================
+# Feedback
+# ============================================================
 
 if prediction_record:
 
@@ -1318,8 +1696,8 @@ if prediction_record:
     section_heading(
         "How was this recommendation?",
         (
-            "Your feedback helps evaluate whether NudgeWise "
-            "recommendations are useful and understandable."
+            "Your feedback helps evaluate whether specific "
+            "NudgeWise actions are useful and understandable."
         ),
     )
 
@@ -1381,6 +1759,23 @@ if prediction_record:
                         f"{sense_value} / 5"
                     ),
                 )
+
+
+        stored_feedback_action = (
+            existing_feedback.get(
+                "action_id"
+            )
+        )
+
+
+        if stored_feedback_action:
+
+            st.caption(
+                (
+                    f"Feedback linked to action: "
+                    f"{stored_feedback_action}"
+                )
+            )
 
 
     else:
@@ -1465,6 +1860,11 @@ if prediction_record:
 
                 comment=(
                     comment.strip()
+                    or None
+                ),
+
+                action_id=(
+                    displayed_action_id
                     or None
                 ),
             )
@@ -1887,36 +2287,44 @@ with st.expander(
         NudgeWise is a research prototype exploring personalised
         digital wellbeing recommendations.
 
-        The wellbeing indicator summarises six self-reported dimensions:
-        sleep, stress, mood, energy, physical activity and perceived
-        connectedness. It is a product-level research measure, not a
-        medical or clinical assessment.
+        The wellbeing indicator summarises six self-reported
+        dimensions: sleep, stress, mood, energy, physical activity
+        and perceived connectedness. It is a product-level research
+        measure, not a medical or clinical assessment.
 
-        Recreational screen time is displayed and used by the AI, but
-        it is not directly converted into a wellbeing-score penalty
-        because NudgeWise does not assume one universal evidence-backed
+        Recreational screen time is displayed and used by the AI,
+        but it is not directly converted into a wellbeing-score
+        penalty because NudgeWise does not assume one universal
         harmful screen-time threshold.
 
-        The v2.6 AI model selects one of six broad intervention classes.
+        The AI model selects one of six broad intervention classes.
 
-        The v2.7 contextual action engine then translates that class
-        into a more specific action based on the participant's current
-        context.
+        The contextual action engine then translates that intervention
+        into a more specific action using the participant's current
+        context. It does not override the AI-selected intervention.
 
-        The contextual action engine does not override the AI-selected
-        intervention.
+        For research-grade prediction records, NudgeWise stores the
+        model version, complete six-class probability distribution,
+        uncertainty measures and the exact contextual action displayed
+        to the participant.
 
-        Model probabilities describe the relative preferences learned
-        from the NudgeWise synthetic decision model. They are not
-        probabilities that an intervention will improve wellbeing.
+        This allows historical predictions to remain reproducible even
+        if the model or recommendation engine is later updated.
 
-        Local model explanations describe sensitivity to input changes.
-        They should not be interpreted as causal effects.
+        Model probabilities describe relative model preference and are
+        not probabilities that an intervention will improve wellbeing.
 
-        Retrospective check-ins are labelled separately because they
-        rely on recalled rather than same-day responses.
+        Local model explanations describe model sensitivity to input
+        changes and should not be interpreted as causal effects.
 
-        Editing or deleting a check-in may also update or remove its
-        associated recommendation and feedback.
+        Retrospective check-ins are marked separately because they rely
+        on recalled rather than same-day responses.
+
+        Editing a check-in regenerates its prediction because the input
+        data have changed. Previous feedback attached to that replaced
+        prediction is therefore removed.
+
+        Deleting a check-in also removes its associated prediction and
+        feedback records.
         """
     )

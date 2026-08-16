@@ -1,10 +1,10 @@
 """
 pages/past_checkin.py
 
-NudgeWise Version 2.6
+NudgeWise Version 2.8
 Retrospective missed-day check-in.
 
-Uses the same v2.6 production variables as the live check-in:
+Uses the same production variables as the live check-in:
 - sleep
 - stress
 - mood
@@ -16,8 +16,16 @@ Uses the same v2.6 production variables as the live check-in:
 - hour
 - day type
 
-Retrospective responses are marked separately so they can be
-distinguished during research analysis.
+Research-grade logging stores:
+- model version
+- full six-class probability distribution
+- uncertainty metrics
+- model certainty
+- contextual action ID
+- contextual action title/text/reason
+
+Retrospective responses are explicitly marked so they can be
+distinguished from same-day entries during research analysis.
 """
 
 from __future__ import annotations
@@ -49,13 +57,16 @@ from database import (
 )
 
 from predict import (
-    explain_prediction,
-    predict_nudge,
+    get_prediction_details,
 )
 
 from services.auth import (
     ensure_current_participant,
     is_logged_in,
+)
+
+from services.recommendations import (
+    personalise_recommendation,
 )
 
 
@@ -66,6 +77,8 @@ from services.auth import (
 NZ_TIMEZONE = ZoneInfo(
     "Pacific/Auckland"
 )
+
+ACTION_ENGINE_VERSION = "2.7"
 
 
 # ============================================================
@@ -418,38 +431,54 @@ if submitted:
     try:
 
         # ----------------------------------------------------
-        # v2.6 prediction
+        # Complete v2.6 AI prediction
         # ----------------------------------------------------
 
-        prediction, confidence = (
-            predict_nudge(
-                sleep=sleep,
-                stress=stress,
-                mood=mood,
-                energy=energy,
-                screen_time=screen_time,
-                activity_minutes=int(
-                    activity_minutes
-                ),
-                connectedness=int(
-                    connectedness
-                ),
-                activity=activity,
-                day_type=selected_day_type,
-                hour=approximate_hour,
-            )
+        ai_details = get_prediction_details(
+            sleep=sleep,
+            stress=stress,
+            mood=mood,
+            energy=energy,
+            screen_time=screen_time,
+            activity_minutes=int(
+                activity_minutes
+            ),
+            connectedness=int(
+                connectedness
+            ),
+            activity=activity,
+            day_type=selected_day_type,
+            hour=approximate_hour,
+            include_explanation=True,
         )
 
 
-        reasons = (
-            explain_prediction(
+        prediction = (
+            ai_details[
+                "prediction"
+            ]
+        )
+
+
+        confidence = float(
+            ai_details[
+                "confidence"
+            ]
+        )
+
+
+        # ----------------------------------------------------
+        # v2.7 contextual action
+        # ----------------------------------------------------
+
+        contextual_guidance = (
+            personalise_recommendation(
                 prediction=prediction,
                 sleep=sleep,
                 stress=stress,
-                screen_time=screen_time,
-                hour=approximate_hour,
-                energy=energy,
                 mood=mood,
+                energy=energy,
+                screen_time=screen_time,
                 activity_minutes=int(
                     activity_minutes
                 ),
@@ -457,7 +486,7 @@ if submitted:
                     connectedness
                 ),
                 activity=activity,
-                day_type=selected_day_type,
+                hour=approximate_hour,
             )
         )
 
@@ -487,13 +516,69 @@ if submitted:
 
 
         # ----------------------------------------------------
-        # Save associated prediction
+        # Save research-grade prediction snapshot
         # ----------------------------------------------------
 
         prediction_id = save_prediction(
             checkin_id=checkin_id,
             nudge=prediction,
             confidence=confidence,
+
+            model_version=(
+                ai_details.get(
+                    "model_version"
+                )
+            ),
+
+            action_engine_version=(
+                ACTION_ENGINE_VERSION
+            ),
+
+            probabilities=(
+                ai_details[
+                    "probabilities"
+                ]
+            ),
+
+            probability_margin=(
+                ai_details[
+                    "probability_margin"
+                ]
+            ),
+
+            entropy=(
+                ai_details[
+                    "entropy"
+                ]
+            ),
+
+            normalised_entropy=(
+                ai_details[
+                    "normalised_entropy"
+                ]
+            ),
+
+            certainty=(
+                ai_details[
+                    "certainty"
+                ]
+            ),
+
+            action_id=(
+                contextual_guidance.action_id
+            ),
+
+            action_title=(
+                contextual_guidance.title
+            ),
+
+            action_text=(
+                contextual_guidance.action
+            ),
+
+            action_reason=(
+                contextual_guidance.reason
+            ),
         )
 
 
@@ -510,7 +595,10 @@ if submitted:
         )
 
         st.session_state.reasons = (
-            reasons
+            ai_details.get(
+                "reasons",
+                [],
+            )
         )
 
         st.session_state.prediction_id = (
