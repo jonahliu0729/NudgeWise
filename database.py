@@ -1,47 +1,42 @@
 """
 database.py
 
-Persistent SQLite storage for NudgeWise Version 2.6.
+Persistent Supabase/PostgreSQL storage for NudgeWise v2.7.
 
-Supports:
+This replaces the previous local SQLite database.
+
+Why:
+Streamlit Community Cloud's local filesystem is not suitable
+for persistent longitudinal participant data.
+
+Supabase now stores:
 - authenticated participants
-- one check-in per participant per calendar day
-- live and retrospective check-ins
+- daily check-ins
+- retrospective check-ins
 - physical activity minutes
 - perceived connectedness
-- backward compatibility with the legacy social variable
-- editing and deleting check-ins
 - AI predictions
 - recommendation feedback
 - usability feedback
 
-Migration strategy:
-- existing databases are preserved
-- activity_minutes is added if missing
-- connectedness is added if missing
-- historical social categories are mapped approximately to
-  connectedness values for backward compatibility
+IMPORTANT
+---------
+The Supabase secret key must be stored in Streamlit secrets
+and must never be committed to Git.
 """
 
 from __future__ import annotations
 
 import secrets
-import sqlite3
 
-from pathlib import Path
 from typing import Any
 
+import streamlit as st
 
-# ============================================================
-# Configuration
-# ============================================================
-
-BASE_DIR = Path(__file__).resolve().parent
-
-DATABASE_FOLDER = BASE_DIR / "database"
-DATABASE_FOLDER.mkdir(exist_ok=True)
-
-DATABASE_PATH = DATABASE_FOLDER / "nudge.db"
+from supabase import (
+    Client,
+    create_client,
+)
 
 
 # ============================================================
@@ -49,48 +44,73 @@ DATABASE_PATH = DATABASE_FOLDER / "nudge.db"
 # ============================================================
 
 class DuplicateCheckinError(Exception):
-    """Raised when a participant already has a log for a date."""
+    """
+    Raised when a participant already has a check-in
+    for the selected date.
+    """
 
 
 # ============================================================
-# Connection
+# Supabase client
 # ============================================================
 
-def connect_db() -> sqlite3.Connection:
+@st.cache_resource
+def get_supabase() -> Client:
+    """
+    Create one cached Supabase client for the Streamlit process.
+    """
 
-    connection = sqlite3.connect(
-        DATABASE_PATH
+    try:
+
+        url = st.secrets[
+            "supabase"
+        ][
+            "url"
+        ]
+
+        key = st.secrets[
+            "supabase"
+        ][
+            "key"
+        ]
+
+    except Exception as error:
+
+        raise RuntimeError(
+            "Supabase credentials are missing. "
+            "Add [supabase] url and key to Streamlit secrets."
+        ) from error
+
+
+    if not url or not key:
+
+        raise RuntimeError(
+            "Supabase credentials are empty."
+        )
+
+
+    return create_client(
+        str(url),
+        str(key),
     )
 
-    connection.row_factory = sqlite3.Row
-
-    connection.execute(
-        "PRAGMA foreign_keys = ON"
-    )
-
-    return connection
-
 
 # ============================================================
-# Schema helpers
+# Compatibility setup
 # ============================================================
 
-def _column_exists(
-    cursor: sqlite3.Cursor,
-    table: str,
-    column: str,
-) -> bool:
+def create_tables() -> None:
+    """
+    Retained so existing NudgeWise code does not need changing.
 
-    cursor.execute(
-        f"PRAGMA table_info({table})"
-    )
+    PostgreSQL tables are created through the Supabase SQL Editor,
+    not dynamically by the application.
+    """
 
-    columns = {
-        row["name"]
-        for row in cursor.fetchall()
-    }
+    # Force connection initialization so configuration errors
+    # are discovered immediately.
 
-    return column in columns
+    get_supabase()
 
 
 # ============================================================
@@ -101,11 +121,10 @@ def connectedness_to_social(
     connectedness: int,
 ) -> str:
     """
-    Convert the new 1-5 connectedness measure into the old
-    Low / Medium / High representation.
+    Preserve the legacy social field while the database still
+    contains it.
 
-    This exists only to keep the v2.5 model operational during
-    the v2.6 migration.
+    v2.6+ AI uses connectedness directly.
     """
 
     value = max(
@@ -116,330 +135,18 @@ def connectedness_to_social(
         ),
     )
 
+
     if value <= 2:
+
         return "Low"
 
+
     if value == 3:
+
         return "Medium"
 
+
     return "High"
-
-
-# ============================================================
-# Database setup
-# ============================================================
-
-def create_tables() -> None:
-
-    connection = connect_db()
-    cursor = connection.cursor()
-
-    # --------------------------------------------------------
-    # Users
-    # --------------------------------------------------------
-
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            age INTEGER,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-
-    if not _column_exists(
-        cursor,
-        "users",
-        "nickname",
-    ):
-        cursor.execute(
-            """
-            ALTER TABLE users
-            ADD COLUMN nickname TEXT
-            """
-        )
-
-    if not _column_exists(
-        cursor,
-        "users",
-        "participant_code",
-    ):
-        cursor.execute(
-            """
-            ALTER TABLE users
-            ADD COLUMN participant_code TEXT
-            """
-        )
-
-    if not _column_exists(
-        cursor,
-        "users",
-        "auth_subject_hash",
-    ):
-        cursor.execute(
-            """
-            ALTER TABLE users
-            ADD COLUMN auth_subject_hash TEXT
-            """
-        )
-
-    cursor.execute(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS
-        idx_users_auth_subject_hash
-        ON users(auth_subject_hash)
-        """
-    )
-
-    cursor.execute(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS
-        idx_users_participant_code
-        ON users(participant_code)
-        """
-    )
-
-    # --------------------------------------------------------
-    # Check-ins
-    # --------------------------------------------------------
-
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS checkins (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-            user_id INTEGER,
-
-            sleep REAL,
-            stress INTEGER,
-            mood INTEGER,
-            energy INTEGER,
-
-            screen_time REAL,
-            activity_minutes INTEGER,
-
-            activity TEXT,
-
-            connectedness INTEGER,
-            social TEXT,
-
-            hour INTEGER,
-
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-
-    # --------------------------------------------------------
-    # Date
-    # --------------------------------------------------------
-
-    if not _column_exists(
-        cursor,
-        "checkins",
-        "checkin_date",
-    ):
-        cursor.execute(
-            """
-            ALTER TABLE checkins
-            ADD COLUMN checkin_date TEXT
-            """
-        )
-
-        cursor.execute(
-            """
-            UPDATE checkins
-            SET checkin_date = DATE(created_at)
-            WHERE checkin_date IS NULL
-            """
-        )
-
-    # --------------------------------------------------------
-    # Entry type
-    # --------------------------------------------------------
-
-    if not _column_exists(
-        cursor,
-        "checkins",
-        "entry_type",
-    ):
-        cursor.execute(
-            """
-            ALTER TABLE checkins
-            ADD COLUMN entry_type TEXT
-            DEFAULT 'live'
-            """
-        )
-
-        cursor.execute(
-            """
-            UPDATE checkins
-            SET entry_type = 'live'
-            WHERE entry_type IS NULL
-            """
-        )
-
-    # --------------------------------------------------------
-    # Physical activity migration
-    # --------------------------------------------------------
-
-    if not _column_exists(
-        cursor,
-        "checkins",
-        "activity_minutes",
-    ):
-        cursor.execute(
-            """
-            ALTER TABLE checkins
-            ADD COLUMN activity_minutes INTEGER
-            DEFAULT 0
-            """
-        )
-
-        cursor.execute(
-            """
-            UPDATE checkins
-            SET activity_minutes = 0
-            WHERE activity_minutes IS NULL
-            """
-        )
-
-    # --------------------------------------------------------
-    # Connectedness migration
-    # --------------------------------------------------------
-
-    if not _column_exists(
-        cursor,
-        "checkins",
-        "connectedness",
-    ):
-        cursor.execute(
-            """
-            ALTER TABLE checkins
-            ADD COLUMN connectedness INTEGER
-            """
-        )
-
-    # Historical approximation only.
-    #
-    # Low    -> 2
-    # Medium -> 3
-    # High   -> 4
-
-    cursor.execute(
-        """
-        UPDATE checkins
-
-        SET connectedness =
-            CASE social
-                WHEN 'Low' THEN 2
-                WHEN 'Medium' THEN 3
-                WHEN 'High' THEN 4
-                ELSE 3
-            END
-
-        WHERE connectedness IS NULL
-        """
-    )
-
-    cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS
-        idx_checkins_user_date
-        ON checkins(user_id, checkin_date)
-        """
-    )
-
-    # --------------------------------------------------------
-    # Predictions
-    # --------------------------------------------------------
-
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS predictions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-            checkin_id INTEGER,
-
-            predicted_nudge TEXT,
-            confidence REAL,
-
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-
-    # --------------------------------------------------------
-    # Recommendation feedback
-    # --------------------------------------------------------
-
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS feedback (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-            prediction_id INTEGER,
-
-            accepted INTEGER,
-            completed INTEGER,
-            rating INTEGER,
-
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-
-    if not _column_exists(
-        cursor,
-        "feedback",
-        "makes_sense",
-    ):
-        cursor.execute(
-            """
-            ALTER TABLE feedback
-            ADD COLUMN makes_sense INTEGER
-            """
-        )
-
-    if not _column_exists(
-        cursor,
-        "feedback",
-        "comment",
-    ):
-        cursor.execute(
-            """
-            ALTER TABLE feedback
-            ADD COLUMN comment TEXT
-            """
-        )
-
-    # --------------------------------------------------------
-    # Usability feedback
-    # --------------------------------------------------------
-
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS usability_feedback (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-            user_id INTEGER,
-
-            ease_of_use INTEGER,
-            interface_clarity INTEGER,
-            trust INTEGER,
-
-            confusing TEXT,
-            improvement TEXT,
-
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """
-    )
-
-    connection.commit()
-    connection.close()
 
 
 # ============================================================
@@ -453,43 +160,55 @@ def _generate_participant_code() -> str:
         "23456789"
     )
 
+
     token = "".join(
-        secrets.choice(alphabet)
-        for _ in range(6)
+        secrets.choice(
+            alphabet
+        )
+        for _ in range(
+            6
+        )
     )
 
-    return f"NW-{token}"
+
+    return (
+        f"NW-{token}"
+    )
 
 
 def _participant_code_exists(
     participant_code: str,
 ) -> bool:
 
-    connection = connect_db()
-    cursor = connection.cursor()
+    supabase = get_supabase()
 
-    cursor.execute(
-        """
-        SELECT 1
-        FROM users
-        WHERE participant_code = ?
-        LIMIT 1
-        """,
-        (participant_code,),
+
+    response = (
+        supabase
+        .table(
+            "users"
+        )
+        .select(
+            "id"
+        )
+        .eq(
+            "participant_code",
+            participant_code,
+        )
+        .limit(
+            1
+        )
+        .execute()
     )
 
-    exists = (
-        cursor.fetchone()
-        is not None
+
+    return bool(
+        response.data
     )
-
-    connection.close()
-
-    return exists
 
 
 # ============================================================
-# Participant creation / retrieval
+# Participant creation
 # ============================================================
 
 def create_authenticated_participant(
@@ -502,8 +221,11 @@ def create_authenticated_participant(
         auth_subject_hash
     )
 
+
     if existing is not None:
+
         return existing
+
 
     while True:
 
@@ -511,118 +233,149 @@ def create_authenticated_participant(
             _generate_participant_code()
         )
 
+
         if not _participant_code_exists(
             participant_code
         ):
+
             break
+
 
     clean_nickname = (
         nickname.strip()
         or "Participant"
     )
 
-    connection = connect_db()
-    cursor = connection.cursor()
 
-    cursor.execute(
-        """
-        INSERT INTO users (
-            name,
-            nickname,
-            age,
-            participant_code,
-            auth_subject_hash
-        )
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        (
+    payload = {
+        "name":
             clean_nickname,
+
+        "nickname":
             clean_nickname,
-            int(age),
+
+        "age":
+            int(
+                age
+            ),
+
+        "participant_code":
             participant_code,
+
+        "auth_subject_hash":
             auth_subject_hash,
-        ),
-    )
-
-    user_id = cursor.lastrowid
-
-    connection.commit()
-    connection.close()
-
-    return {
-        "id": int(user_id),
-        "nickname": clean_nickname,
-        "age": int(age),
-        "participant_code": participant_code,
-        "auth_subject_hash": auth_subject_hash,
     }
 
+
+    supabase = get_supabase()
+
+
+    response = (
+        supabase
+        .table(
+            "users"
+        )
+        .insert(
+            payload
+        )
+        .execute()
+    )
+
+
+    if not response.data:
+
+        raise RuntimeError(
+            "Supabase did not return the newly created participant."
+        )
+
+
+    return dict(
+        response.data[
+            0
+        ]
+    )
+
+
+# ============================================================
+# Participant retrieval
+# ============================================================
 
 def get_user(
     user_id: int,
 ) -> dict[str, Any] | None:
 
-    connection = connect_db()
-    cursor = connection.cursor()
+    supabase = get_supabase()
 
-    cursor.execute(
-        """
-        SELECT
-            id,
-            name,
-            nickname,
-            age,
-            participant_code,
-            auth_subject_hash,
-            created_at
-        FROM users
-        WHERE id = ?
-        """,
-        (user_id,),
+
+    response = (
+        supabase
+        .table(
+            "users"
+        )
+        .select(
+            "*"
+        )
+        .eq(
+            "id",
+            int(
+                user_id
+            ),
+        )
+        .limit(
+            1
+        )
+        .execute()
     )
 
-    row = cursor.fetchone()
 
-    connection.close()
+    if not response.data:
 
-    if row is None:
         return None
 
-    return dict(row)
+
+    return dict(
+        response.data[
+            0
+        ]
+    )
 
 
 def get_user_by_auth_hash(
     auth_subject_hash: str,
 ) -> dict[str, Any] | None:
 
-    connection = connect_db()
-    cursor = connection.cursor()
+    supabase = get_supabase()
 
-    cursor.execute(
-        """
-        SELECT
-            id,
-            name,
-            nickname,
-            age,
-            participant_code,
+
+    response = (
+        supabase
+        .table(
+            "users"
+        )
+        .select(
+            "*"
+        )
+        .eq(
+            "auth_subject_hash",
             auth_subject_hash,
-            created_at
-        FROM users
-        WHERE auth_subject_hash = ?
-        LIMIT 1
-        """,
-        (auth_subject_hash,),
+        )
+        .limit(
+            1
+        )
+        .execute()
     )
 
-    row = cursor.fetchone()
 
-    connection.close()
+    if not response.data:
 
-    if row is None:
         return None
 
-    return dict(row)
+
+    return dict(
+        response.data[
+            0
+        ]
+    )
 
 
 # ============================================================
@@ -634,32 +387,48 @@ def get_checkin_for_date(
     checkin_date: str,
 ) -> dict[str, Any] | None:
 
-    connection = connect_db()
-    cursor = connection.cursor()
+    supabase = get_supabase()
 
-    cursor.execute(
-        """
-        SELECT *
-        FROM checkins
-        WHERE user_id = ?
-          AND checkin_date = ?
-        ORDER BY id DESC
-        LIMIT 1
-        """,
-        (
-            user_id,
+
+    response = (
+        supabase
+        .table(
+            "checkins"
+        )
+        .select(
+            "*"
+        )
+        .eq(
+            "user_id",
+            int(
+                user_id
+            ),
+        )
+        .eq(
+            "checkin_date",
             checkin_date,
-        ),
+        )
+        .order(
+            "id",
+            desc=True,
+        )
+        .limit(
+            1
+        )
+        .execute()
     )
 
-    row = cursor.fetchone()
 
-    connection.close()
+    if not response.data:
 
-    if row is None:
         return None
 
-    return dict(row)
+
+    return dict(
+        response.data[
+            0
+        ]
+    )
 
 
 def get_checkin_by_id(
@@ -667,43 +436,55 @@ def get_checkin_by_id(
     user_id: int | None = None,
 ) -> dict[str, Any] | None:
 
-    connection = connect_db()
-    cursor = connection.cursor()
+    supabase = get_supabase()
 
-    if user_id is None:
 
-        cursor.execute(
-            """
-            SELECT *
-            FROM checkins
-            WHERE id = ?
-            """,
-            (checkin_id,),
+    query = (
+        supabase
+        .table(
+            "checkins"
         )
+        .select(
+            "*"
+        )
+        .eq(
+            "id",
+            int(
+                checkin_id
+            ),
+        )
+    )
 
-    else:
 
-        cursor.execute(
-            """
-            SELECT *
-            FROM checkins
-            WHERE id = ?
-              AND user_id = ?
-            """,
-            (
-                checkin_id,
-                user_id,
+    if user_id is not None:
+
+        query = query.eq(
+            "user_id",
+            int(
+                user_id
             ),
         )
 
-    row = cursor.fetchone()
 
-    connection.close()
+    response = (
+        query
+        .limit(
+            1
+        )
+        .execute()
+    )
 
-    if row is None:
+
+    if not response.data:
+
         return None
 
-    return dict(row)
+
+    return dict(
+        response.data[
+            0
+        ]
+    )
 
 
 # ============================================================
@@ -725,87 +506,145 @@ def save_checkin(
     entry_type: str = "live",
 ) -> int:
 
-    connection = connect_db()
-    cursor = connection.cursor()
-
-    cursor.execute(
-        """
-        SELECT id
-        FROM checkins
-        WHERE user_id = ?
-          AND checkin_date = ?
-        LIMIT 1
-        """,
-        (
-            user_id,
-            checkin_date,
-        ),
+    existing = get_checkin_for_date(
+        user_id=user_id,
+        checkin_date=checkin_date,
     )
 
-    if cursor.fetchone() is not None:
 
-        connection.close()
+    if existing is not None:
 
         raise DuplicateCheckinError(
             "A check-in already exists for this date."
         )
 
+
     connectedness = max(
         1,
         min(
             5,
-            int(connectedness),
+            int(
+                connectedness
+            ),
         ),
     )
 
-    legacy_social = (
-        connectedness_to_social(
-            connectedness
-        )
-    )
 
-    cursor.execute(
-        """
-        INSERT INTO checkins (
-            user_id,
-            sleep,
-            stress,
-            mood,
-            energy,
-            screen_time,
-            activity_minutes,
+    payload = {
+        "user_id":
+            int(
+                user_id
+            ),
+
+        "sleep":
+            float(
+                sleep
+            ),
+
+        "stress":
+            int(
+                stress
+            ),
+
+        "mood":
+            int(
+                mood
+            ),
+
+        "energy":
+            int(
+                energy
+            ),
+
+        "screen_time":
+            float(
+                screen_time
+            ),
+
+        "activity_minutes":
+            int(
+                activity_minutes
+            ),
+
+        "activity":
             activity,
+
+        "connectedness":
             connectedness,
-            social,
-            hour,
+
+        "social":
+            connectedness_to_social(
+                connectedness
+            ),
+
+        "hour":
+            int(
+                hour
+            ),
+
+        "checkin_date":
             checkin_date,
-            entry_type
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            user_id,
-            sleep,
-            stress,
-            mood,
-            energy,
-            screen_time,
-            int(activity_minutes),
-            activity,
-            connectedness,
-            legacy_social,
-            hour,
-            checkin_date,
+
+        "entry_type":
             entry_type,
-        ),
+    }
+
+
+    supabase = get_supabase()
+
+
+    try:
+
+        response = (
+            supabase
+            .table(
+                "checkins"
+            )
+            .insert(
+                payload
+            )
+            .execute()
+        )
+
+    except Exception as error:
+
+        # PostgreSQL still provides the final race-condition
+        # protection through the UNIQUE constraint.
+
+        error_text = str(
+            error
+        ).lower()
+
+
+        if (
+            "duplicate"
+            in error_text
+            or "unique"
+            in error_text
+        ):
+
+            raise DuplicateCheckinError(
+                "A check-in already exists for this date."
+            ) from error
+
+
+        raise
+
+
+    if not response.data:
+
+        raise RuntimeError(
+            "Supabase did not return the newly created check-in."
+        )
+
+
+    return int(
+        response.data[
+            0
+        ][
+            "id"
+        ]
     )
-
-    checkin_id = cursor.lastrowid
-
-    connection.commit()
-    connection.close()
-
-    return int(checkin_id)
 
 
 # ============================================================
@@ -830,62 +669,92 @@ def update_checkin(
         1,
         min(
             5,
-            int(connectedness),
+            int(
+                connectedness
+            ),
         ),
     )
 
-    legacy_social = (
-        connectedness_to_social(
-            connectedness
-        )
-    )
 
-    connection = connect_db()
-    cursor = connection.cursor()
+    payload = {
+        "sleep":
+            float(
+                sleep
+            ),
 
-    cursor.execute(
-        """
-        UPDATE checkins
+        "stress":
+            int(
+                stress
+            ),
 
-        SET
-            sleep = ?,
-            stress = ?,
-            mood = ?,
-            energy = ?,
-            screen_time = ?,
-            activity_minutes = ?,
-            activity = ?,
-            connectedness = ?,
-            social = ?,
-            hour = ?
+        "mood":
+            int(
+                mood
+            ),
 
-        WHERE id = ?
-          AND user_id = ?
-        """,
-        (
-            sleep,
-            stress,
-            mood,
-            energy,
-            screen_time,
-            int(activity_minutes),
+        "energy":
+            int(
+                energy
+            ),
+
+        "screen_time":
+            float(
+                screen_time
+            ),
+
+        "activity_minutes":
+            int(
+                activity_minutes
+            ),
+
+        "activity":
             activity,
+
+        "connectedness":
             connectedness,
-            legacy_social,
-            hour,
-            checkin_id,
-            user_id,
-        ),
+
+        "social":
+            connectedness_to_social(
+                connectedness
+            ),
+
+        "hour":
+            int(
+                hour
+            ),
+    }
+
+
+    supabase = get_supabase()
+
+
+    response = (
+        supabase
+        .table(
+            "checkins"
+        )
+        .update(
+            payload
+        )
+        .eq(
+            "id",
+            int(
+                checkin_id
+            ),
+        )
+        .eq(
+            "user_id",
+            int(
+                user_id
+            ),
+        )
+        .execute()
     )
 
-    updated = (
-        cursor.rowcount > 0
+
+    return bool(
+        response.data
     )
-
-    connection.commit()
-    connection.close()
-
-    return updated
 
 
 # ============================================================
@@ -897,67 +766,49 @@ def delete_checkin(
     user_id: int,
 ) -> bool:
 
-    connection = connect_db()
-    cursor = connection.cursor()
-
-    cursor.execute(
-        """
-        SELECT id
-        FROM checkins
-        WHERE id = ?
-          AND user_id = ?
-        """,
-        (
-            checkin_id,
-            user_id,
-        ),
+    existing = get_checkin_by_id(
+        checkin_id=checkin_id,
+        user_id=user_id,
     )
 
-    if cursor.fetchone() is None:
 
-        connection.close()
+    if existing is None:
+
         return False
 
-    cursor.execute(
-        """
-        DELETE FROM feedback
-        WHERE prediction_id IN (
-            SELECT id
-            FROM predictions
-            WHERE checkin_id = ?
+
+    # Foreign keys are configured ON DELETE CASCADE, so
+    # associated predictions and feedback are removed safely
+    # by PostgreSQL.
+
+    supabase = get_supabase()
+
+
+    response = (
+        supabase
+        .table(
+            "checkins"
         )
-        """,
-        (checkin_id,),
+        .delete()
+        .eq(
+            "id",
+            int(
+                checkin_id
+            ),
+        )
+        .eq(
+            "user_id",
+            int(
+                user_id
+            ),
+        )
+        .execute()
     )
 
-    cursor.execute(
-        """
-        DELETE FROM predictions
-        WHERE checkin_id = ?
-        """,
-        (checkin_id,),
+
+    return bool(
+        response.data
     )
-
-    cursor.execute(
-        """
-        DELETE FROM checkins
-        WHERE id = ?
-          AND user_id = ?
-        """,
-        (
-            checkin_id,
-            user_id,
-        ),
-    )
-
-    deleted = (
-        cursor.rowcount > 0
-    )
-
-    connection.commit()
-    connection.close()
-
-    return deleted
 
 
 # ============================================================
@@ -969,51 +820,49 @@ def get_recent_checkins(
     limit: int = 30,
 ):
 
-    connection = connect_db()
-    cursor = connection.cursor()
+    supabase = get_supabase()
 
-    cursor.execute(
-        """
-        SELECT
-            id,
-            user_id,
-            sleep,
-            stress,
-            mood,
-            energy,
-            screen_time,
-            activity_minutes,
-            activity,
-            connectedness,
-            social,
-            hour,
-            checkin_date,
-            entry_type,
-            created_at
 
-        FROM checkins
-
-        WHERE user_id = ?
-
-        ORDER BY
-            checkin_date DESC,
-            created_at DESC
-
-        LIMIT ?
-        """,
-        (
-            user_id,
-            limit,
-        ),
+    response = (
+        supabase
+        .table(
+            "checkins"
+        )
+        .select(
+            "*"
+        )
+        .eq(
+            "user_id",
+            int(
+                user_id
+            ),
+        )
+        .order(
+            "checkin_date",
+            desc=True,
+        )
+        .order(
+            "created_at",
+            desc=True,
+        )
+        .limit(
+            int(
+                limit
+            )
+        )
+        .execute()
     )
 
-    rows = cursor.fetchall()
-
-    connection.close()
 
     return [
-        dict(row)
-        for row in rows
+        dict(
+            row
+        )
+        for row
+        in (
+            response.data
+            or []
+        )
     ]
 
 
@@ -1027,31 +876,51 @@ def save_prediction(
     confidence: float,
 ) -> int:
 
-    connection = connect_db()
-    cursor = connection.cursor()
+    payload = {
+        "checkin_id":
+            int(
+                checkin_id
+            ),
 
-    cursor.execute(
-        """
-        INSERT INTO predictions (
-            checkin_id,
-            predicted_nudge,
-            confidence
-        )
-        VALUES (?, ?, ?)
-        """,
-        (
-            checkin_id,
+        "predicted_nudge":
             nudge,
-            confidence,
-        ),
+
+        "confidence":
+            float(
+                confidence
+            ),
+    }
+
+
+    supabase = get_supabase()
+
+
+    response = (
+        supabase
+        .table(
+            "predictions"
+        )
+        .insert(
+            payload
+        )
+        .execute()
     )
 
-    prediction_id = cursor.lastrowid
 
-    connection.commit()
-    connection.close()
+    if not response.data:
 
-    return int(prediction_id)
+        raise RuntimeError(
+            "Supabase did not return the created prediction."
+        )
+
+
+    return int(
+        response.data[
+            0
+        ][
+            "id"
+        ]
+    )
 
 
 def replace_prediction(
@@ -1060,51 +929,61 @@ def replace_prediction(
     confidence: float,
 ) -> int:
 
-    connection = connect_db()
-    cursor = connection.cursor()
+    supabase = get_supabase()
 
-    cursor.execute(
-        """
-        DELETE FROM feedback
-        WHERE prediction_id IN (
-            SELECT id
-            FROM predictions
-            WHERE checkin_id = ?
+
+    # Find old prediction IDs first so feedback can be removed.
+
+    old_predictions = (
+        supabase
+        .table(
+            "predictions"
         )
-        """,
-        (checkin_id,),
+        .select(
+            "id"
+        )
+        .eq(
+            "checkin_id",
+            int(
+                checkin_id
+            ),
+        )
+        .execute()
     )
 
-    cursor.execute(
-        """
-        DELETE FROM predictions
-        WHERE checkin_id = ?
-        """,
-        (checkin_id,),
-    )
 
-    cursor.execute(
-        """
-        INSERT INTO predictions (
-            checkin_id,
-            predicted_nudge,
-            confidence
-        )
-        VALUES (?, ?, ?)
-        """,
-        (
-            checkin_id,
-            nudge,
-            confidence,
+    for prediction in (
+        old_predictions.data
+        or []
+    ):
+
+        supabase.table(
+            "feedback"
+        ).delete().eq(
+            "prediction_id",
+            int(
+                prediction[
+                    "id"
+                ]
+            ),
+        ).execute()
+
+
+    supabase.table(
+        "predictions"
+    ).delete().eq(
+        "checkin_id",
+        int(
+            checkin_id
         ),
+    ).execute()
+
+
+    return save_prediction(
+        checkin_id=checkin_id,
+        nudge=nudge,
+        confidence=confidence,
     )
-
-    prediction_id = cursor.lastrowid
-
-    connection.commit()
-    connection.close()
-
-    return int(prediction_id)
 
 
 def get_recent_predictions(
@@ -1112,43 +991,70 @@ def get_recent_predictions(
     limit: int = 30,
 ):
 
-    connection = connect_db()
-    cursor = connection.cursor()
+    # Supabase/PostgREST supports nested relation selection.
+    # We retrieve predictions and constrain them through the
+    # linked check-in relationship.
 
-    cursor.execute(
-        """
-        SELECT
-            predictions.id,
-            predictions.checkin_id,
-            predictions.predicted_nudge,
-            predictions.confidence,
-            predictions.created_at
+    supabase = get_supabase()
 
-        FROM predictions
 
-        INNER JOIN checkins
-            ON predictions.checkin_id = checkins.id
-
-        WHERE checkins.user_id = ?
-
-        ORDER BY predictions.created_at DESC
-
-        LIMIT ?
-        """,
-        (
-            user_id,
-            limit,
-        ),
+    response = (
+        supabase
+        .table(
+            "predictions"
+        )
+        .select(
+            """
+            id,
+            checkin_id,
+            predicted_nudge,
+            confidence,
+            created_at,
+            checkins!inner(user_id)
+            """
+        )
+        .eq(
+            "checkins.user_id",
+            int(
+                user_id
+            ),
+        )
+        .order(
+            "created_at",
+            desc=True,
+        )
+        .limit(
+            int(
+                limit
+            )
+        )
+        .execute()
     )
 
-    rows = cursor.fetchall()
 
-    connection.close()
+    results = []
 
-    return [
-        dict(row)
-        for row in rows
-    ]
+
+    for row in (
+        response.data
+        or []
+    ):
+
+        clean_row = dict(
+            row
+        )
+
+        clean_row.pop(
+            "checkins",
+            None,
+        )
+
+        results.append(
+            clean_row
+        )
+
+
+    return results
 
 
 def get_latest_prediction(
@@ -1160,10 +1066,15 @@ def get_latest_prediction(
         limit=1,
     )
 
+
     if not rows:
+
         return None
 
-    return rows[0]
+
+    return rows[
+        0
+    ]
 
 
 # ============================================================
@@ -1174,28 +1085,44 @@ def get_feedback_for_prediction(
     prediction_id: int,
 ) -> dict[str, Any] | None:
 
-    connection = connect_db()
-    cursor = connection.cursor()
+    supabase = get_supabase()
 
-    cursor.execute(
-        """
-        SELECT *
-        FROM feedback
-        WHERE prediction_id = ?
-        ORDER BY id DESC
-        LIMIT 1
-        """,
-        (prediction_id,),
+
+    response = (
+        supabase
+        .table(
+            "feedback"
+        )
+        .select(
+            "*"
+        )
+        .eq(
+            "prediction_id",
+            int(
+                prediction_id
+            ),
+        )
+        .order(
+            "id",
+            desc=True,
+        )
+        .limit(
+            1
+        )
+        .execute()
     )
 
-    row = cursor.fetchone()
 
-    connection.close()
+    if not response.data:
 
-    if row is None:
         return None
 
-    return dict(row)
+
+    return dict(
+        response.data[
+            0
+        ]
+    )
 
 
 def save_feedback(
@@ -1207,41 +1134,85 @@ def save_feedback(
     comment: str | None = None,
 ) -> None:
 
-    connection = connect_db()
-    cursor = connection.cursor()
+    supabase = get_supabase()
 
-    cursor.execute(
-        """
-        DELETE FROM feedback
-        WHERE prediction_id = ?
-        """,
-        (prediction_id,),
-    )
 
-    cursor.execute(
-        """
-        INSERT INTO feedback (
-            prediction_id,
-            accepted,
-            completed,
-            rating,
-            makes_sense,
-            comment
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            prediction_id,
-            accepted,
-            completed,
-            rating,
-            makes_sense,
+    payload = {
+        "prediction_id":
+            int(
+                prediction_id
+            ),
+
+        "accepted":
+            int(
+                accepted
+            ),
+
+        "completed":
+            int(
+                completed
+            ),
+
+        "rating":
+            int(
+                rating
+            ),
+
+        "makes_sense":
+            (
+                int(
+                    makes_sense
+                )
+                if makes_sense is not None
+                else None
+            ),
+
+        "comment":
             comment,
-        ),
+    }
+
+
+    # One feedback record per prediction.
+    #
+    # PostgreSQL UNIQUE(prediction_id) protects this at the
+    # database level.
+
+    existing = get_feedback_for_prediction(
+        prediction_id
     )
 
-    connection.commit()
-    connection.close()
+
+    if existing:
+
+        (
+            supabase
+            .table(
+                "feedback"
+            )
+            .update(
+                payload
+            )
+            .eq(
+                "prediction_id",
+                int(
+                    prediction_id
+                ),
+            )
+            .execute()
+        )
+
+    else:
+
+        (
+            supabase
+            .table(
+                "feedback"
+            )
+            .insert(
+                payload
+            )
+            .execute()
+        )
 
 
 # ============================================================
@@ -1257,30 +1228,75 @@ def save_usability_feedback(
     improvement: str | None,
 ) -> None:
 
-    connection = connect_db()
-    cursor = connection.cursor()
+    payload = {
+        "user_id":
+            int(
+                user_id
+            ),
 
-    cursor.execute(
-        """
-        INSERT INTO usability_feedback (
-            user_id,
-            ease_of_use,
-            interface_clarity,
-            trust,
+        "ease_of_use":
+            int(
+                ease_of_use
+            ),
+
+        "interface_clarity":
+            int(
+                interface_clarity
+            ),
+
+        "trust":
+            int(
+                trust
+            ),
+
+        "confusing":
             confusing,
-            improvement
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            user_id,
-            ease_of_use,
-            interface_clarity,
-            trust,
-            confusing,
+
+        "improvement":
             improvement,
-        ),
+    }
+
+
+    supabase = get_supabase()
+
+
+    (
+        supabase
+        .table(
+            "usability_feedback"
+        )
+        .insert(
+            payload
+        )
+        .execute()
     )
 
-    connection.commit()
-    connection.close()
+
+# ============================================================
+# Connection test
+# ============================================================
+
+def test_database_connection() -> bool:
+    """
+    Small diagnostic helper for development.
+    """
+
+    supabase = get_supabase()
+
+
+    response = (
+        supabase
+        .table(
+            "users"
+        )
+        .select(
+            "id"
+        )
+        .limit(
+            1
+        )
+        .execute()
+    )
+
+
+    return response.data is not None
