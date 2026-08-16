@@ -1,0 +1,7 @@
+,predicted_Connect socially,predicted_Maintain habits,predicted_Prepare for bed,predicted_Reduce screen time,predicted_Stay active,predicted_Take a short break
+actual_Connect socially,307,188,44,35,65,134
+actual_Maintain habits,116,713,79,61,130,201
+actual_Prepare for bed,51,180,195,45,68,105
+actual_Reduce screen time,90,206,52,72,90,110
+actual_Stay active,102,189,53,41,210,154
+actual_Take a short break,117,238,79,34,80,366

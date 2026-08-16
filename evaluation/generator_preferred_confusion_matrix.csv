@@ -1,0 +1,7 @@
+,model_Connect socially,model_Maintain habits,model_Prepare for bed,model_Reduce screen time,model_Stay active,model_Take a short break
+generator_Connect socially,777,3,0,2,0,8
+generator_Maintain habits,2,1693,4,6,7,7
+generator_Prepare for bed,2,4,494,1,1,2
+generator_Reduce screen time,0,7,1,272,1,0
+generator_Stay active,2,4,1,7,634,2
+generator_Take a short break,0,3,2,0,0,1051
